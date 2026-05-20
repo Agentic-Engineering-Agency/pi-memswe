@@ -167,7 +167,7 @@ if (!options.skipInstall) {
 		`${JSON.stringify({ private: true, dependencies }, undefined, "\t")}\n`,
 	);
 
-	run("npm", ["install", "--omit=dev"], { cwd: installDirectory });
+	run("npm", ["install", "--omit=dev", "--ignore-scripts"], { cwd: installDirectory });
 	mkdirSync(binDirectory, { recursive: true });
 	symlinkSync(join(installDirectory, "node_modules", ".bin", "pi"), join(binDirectory, "pi"));
 }
