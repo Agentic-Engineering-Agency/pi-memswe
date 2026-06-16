@@ -9,6 +9,7 @@ import {
 	initializeWorktreeBaseline,
 	preparePythonEnvironment,
 	type TaskYaml,
+	validateRunRecordShape,
 	writePatchArtifacts,
 } from "../../scripts/memswe-smoke-runner-lib.ts";
 
@@ -81,3 +82,34 @@ describe("memswe smoke runner patch artifacts", () => {
 		}
 	});
 });
+
+describe("memswe smoke runner run-record validation", () => {
+	test("accepts the required run-record shape", () => {
+		expect(() => validateRunRecordShape(validRunRecord())).not.toThrow();
+	});
+
+	test("rejects missing required run-record fields", () => {
+		const record = validRunRecord();
+		delete record.condition.condition_id;
+
+		expect(() => validateRunRecordShape(record)).toThrow("Missing condition_id");
+	});
+});
+
+function validRunRecord(): {
+	schema_version: string;
+	run_id: string;
+	task_id: string;
+	condition: { condition_id?: string };
+	session_results: Array<{ session_id: string }>;
+	output_locations: { artifacts_dir: string };
+} {
+	return {
+		schema_version: "uam-run.v0.1",
+		run_id: "run-1",
+		task_id: "task-1",
+		condition: { condition_id: "no_memory" },
+		session_results: [{ session_id: "s1" }],
+		output_locations: { artifacts_dir: "/tmp/artifacts" },
+	};
+}

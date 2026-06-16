@@ -42,6 +42,15 @@ export type PatchArtifacts = {
 	changedFiles: string;
 };
 
+type RunRecordLike = {
+	schema_version?: unknown;
+	run_id?: unknown;
+	task_id?: unknown;
+	condition?: { condition_id?: unknown };
+	session_results?: unknown;
+	output_locations?: { artifacts_dir?: unknown };
+};
+
 export async function runShellCommand(
 	command: string,
 	cwd: string,
@@ -186,4 +195,22 @@ export async function writePatchArtifacts(workdir: string, artifactsDir: string)
 	await writeFile(agentPatchPath, diff.stdout);
 	await writeFile(changedFilesPath, `${JSON.stringify(changedFiles, null, "	")}\n`);
 	return { agentPatch: agentPatchPath, worktreeDiff: worktreeDiffPath, changedFiles: changedFilesPath };
+}
+
+export function validateRunRecordShape(record: unknown): void {
+	if (!isRunRecordLike(record)) throw new Error("Run record must be an object");
+	if (record.schema_version !== "uam-run.v0.1") throw new Error("Invalid run schema_version");
+	if (typeof record.run_id !== "string" || record.run_id.length === 0) throw new Error("Missing run_id");
+	if (typeof record.task_id !== "string" || record.task_id.length === 0) throw new Error("Missing task_id");
+	if (typeof record.condition?.condition_id !== "string" || record.condition.condition_id.length === 0) {
+		throw new Error("Missing condition_id");
+	}
+	if (!Array.isArray(record.session_results) || record.session_results.length === 0) throw new Error("Missing session_results");
+	if (typeof record.output_locations?.artifacts_dir !== "string" || record.output_locations.artifacts_dir.length === 0) {
+		throw new Error("Missing artifacts_dir");
+	}
+}
+
+function isRunRecordLike(value: unknown): value is RunRecordLike {
+	return typeof value === "object" && value !== null;
 }

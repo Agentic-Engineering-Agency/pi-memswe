@@ -21,6 +21,7 @@ import {
 	inferVerifierAssets,
 	initializeWorktreeBaseline,
 	preparePythonEnvironment,
+	validateRunRecordShape,
 	writePatchArtifacts,
 } from "./memswe-smoke-runner-lib.ts";
 
@@ -512,6 +513,7 @@ async function main(): Promise<void> {
 			artifacts_dir: artifactsDir,
 		},
 	};
+	validateRunRecordShape(record);
 
 	await writeFile(join(artifactsDir, "faux-agent-result.json"), `${JSON.stringify(fauxAgentResult ?? null, null, "	")}\n`);
 	await writeFile(join(artifactsDir, "verifier-results.json"), `${JSON.stringify(results, null, "	")}\n`);
