@@ -34,6 +34,19 @@
 - For ad-hoc scripts, `write` them to a temp file (e.g. `/tmp`), run, edit if needed, remove when done. Don't embed multi-line scripts in `bash` commands.
 - Never commit unless the user asks.
 
+## MemSWE Harness Work
+
+- Treat this fork as the fixed agent runtime/harness for Eduardo's PAP-membench thesis work. The evaluated variable is the memory condition/provider, not pi itself unless the user explicitly asks for a harness comparison.
+- Keep MemSWE benchmark identity in `../memswe`: task schema, fixtures, sessions, facts, verifiers, trace predicates, and run-record schema are source-of-truth there.
+- Keep MemoryBench as reference material, not a direct dependency, unless the user explicitly approves coupling. Borrow provider isolation, phase checkpoints, normalized outputs, and reporting patterns; do not port QA-only `question`/`answer`/judge-first assumptions directly.
+- Do not call real provider/model APIs for harness scaffolding. Use verifier-only flows or the faux provider from `packages/ai/src/providers/faux.ts` until the user asks for real model runs.
+- Preserve fixed-runtime invariants across memory conditions: same model, prompt template, tools, fixture visibility, verifier rules, repetition policy, and scoring wherever feasible.
+- Never expose hidden tests, protected verifier internals, solution patches, or held-out assets to the agent runtime. Hidden/protected verifiers run only from harness-controlled paths.
+- Score deterministic evidence first: visible/hidden/protected tests, diffs, trace predicates, stale-use checks, leakage checks, cost, latency, tokens, tool counts, and artifact presence. LLM judges are supplemental only.
+- Preserve lifecycle metadata in artifacts: task ID, condition ID, repetition, session ID, scope IDs, fact IDs, memory bank/item IDs when available, retrieval/write/delete events, injected memory spans, verifier logs, patches, and trace IDs.
+- Write run artifacts under ignored directories such as `.memswe-runs/`. Do not commit generated run artifacts.
+- For the current smoke runner, verify with `npm --prefix packages/coding-agent run memswe:smoke` and then `npm run check` after code changes.
+
 ## Dependency and Install Security
 
 - Treat npm dep and lockfile changes as reviewed code. Direct external deps stay pinned to exact versions.
