@@ -1,0 +1,526 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MemSWE / PAP-membench Benchmark + Harness Status</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0f17;
+      --panel: #121927;
+      --panel-2: #172033;
+      --ink: #ecf3ff;
+      --muted: #9fb0cc;
+      --faint: #65748f;
+      --border: #2a3852;
+      --accent: #7dd3fc;
+      --accent-2: #a78bfa;
+      --good: #34d399;
+      --warn: #fbbf24;
+      --bad: #fb7185;
+      --code: #0a0d14;
+      --shadow: 0 22px 70px rgba(0, 0, 0, 0.36);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at top left, rgba(125, 211, 252, 0.16), transparent 34rem),
+        radial-gradient(circle at top right, rgba(167, 139, 250, 0.12), transparent 34rem),
+        var(--bg);
+      color: var(--ink);
+      line-height: 1.55;
+    }
+
+    main {
+      width: min(1180px, calc(100vw - 40px));
+      margin: 0 auto;
+      padding: 56px 0 72px;
+    }
+
+    header {
+      display: grid;
+      grid-template-columns: 1.35fr 0.65fr;
+      gap: 28px;
+      align-items: stretch;
+      margin-bottom: 28px;
+    }
+
+    h1, h2, h3 { line-height: 1.1; margin: 0; }
+
+    h1 {
+      font-size: clamp(38px, 6vw, 76px);
+      letter-spacing: -0.06em;
+      max-width: 900px;
+    }
+
+    h2 {
+      font-size: clamp(24px, 3vw, 36px);
+      letter-spacing: -0.035em;
+      margin-bottom: 16px;
+    }
+
+    h3 {
+      font-size: 18px;
+      letter-spacing: -0.02em;
+      margin-bottom: 10px;
+    }
+
+    p { margin: 0 0 14px; color: var(--muted); }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .hero, .card, .metric, .note {
+      background: linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0.018)), var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+    }
+
+    .hero { padding: 34px; }
+
+    .subtitle {
+      max-width: 820px;
+      font-size: 18px;
+      color: var(--muted);
+      margin-top: 20px;
+    }
+
+    .stamp {
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 24px;
+      min-height: 220px;
+      background: linear-gradient(140deg, rgba(125,211,252,0.12), rgba(167,139,250,0.1)), var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+    }
+
+    .stamp strong {
+      font-size: 15px;
+      color: var(--ink);
+    }
+
+    .pill-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 18px; }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 10px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.035);
+      color: var(--muted);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .pill.good { color: var(--good); border-color: rgba(52, 211, 153, 0.36); }
+    .pill.warn { color: var(--warn); border-color: rgba(251, 191, 36, 0.36); }
+    .pill.info { color: var(--accent); border-color: rgba(125, 211, 252, 0.36); }
+
+    .grid { display: grid; gap: 18px; }
+    .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .grid.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+    section { margin-top: 28px; }
+
+    .card { padding: 24px; }
+    .card.compact { padding: 20px; }
+
+    .metric { padding: 20px; min-height: 138px; }
+    .metric .label { color: var(--faint); font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em; }
+    .metric .value { font-size: 34px; font-weight: 760; letter-spacing: -0.04em; margin-top: 10px; }
+    .metric .detail { color: var(--muted); font-size: 13px; margin-top: 8px; }
+
+    ul, ol { margin: 10px 0 0; padding-left: 20px; color: var(--muted); }
+    li { margin: 7px 0; }
+    li strong { color: var(--ink); }
+
+    code, pre {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    }
+
+    code {
+      color: #dbeafe;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 6px;
+      padding: 1px 5px;
+      font-size: 0.92em;
+    }
+
+    pre {
+      margin: 14px 0 0;
+      padding: 16px;
+      color: #dbeafe;
+      background: var(--code);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      overflow: auto;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border-radius: 16px;
+      border: 1px solid var(--border);
+    }
+
+    th, td {
+      text-align: left;
+      vertical-align: top;
+      padding: 13px 14px;
+      border-bottom: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    th {
+      color: var(--ink);
+      background: rgba(255, 255, 255, 0.045);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    tr:last-child td { border-bottom: 0; }
+
+    .status-good { color: var(--good); font-weight: 700; }
+    .status-warn { color: var(--warn); font-weight: 700; }
+    .status-bad { color: var(--bad); font-weight: 700; }
+
+    .timeline { position: relative; padding-left: 24px; }
+    .timeline::before {
+      content: "";
+      position: absolute;
+      left: 6px;
+      top: 4px;
+      bottom: 4px;
+      width: 1px;
+      background: var(--border);
+    }
+
+    .event { position: relative; padding: 0 0 18px; }
+    .event::before {
+      content: "";
+      position: absolute;
+      left: -23px;
+      top: 4px;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 0 5px rgba(125, 211, 252, 0.12);
+    }
+
+    .event strong { display: block; color: var(--ink); margin-bottom: 4px; }
+    .event span { color: var(--muted); }
+
+    .note {
+      padding: 18px 20px;
+      border-color: rgba(251, 191, 36, 0.32);
+      background: linear-gradient(180deg, rgba(251,191,36,0.08), rgba(255,255,255,0.018)), var(--panel);
+    }
+
+    .footer {
+      margin-top: 42px;
+      color: var(--faint);
+      font-size: 13px;
+    }
+
+    @media (max-width: 900px) {
+      header, .grid.two, .grid.three, .grid.four { grid-template-columns: 1fr; }
+      main { width: min(100vw - 24px, 1180px); padding-top: 24px; }
+      .hero, .stamp, .card { border-radius: 18px; }
+    }
+
+    @media print {
+      :root { color-scheme: light; --bg: #fff; --panel: #fff; --panel-2: #fff; --ink: #111827; --muted: #374151; --faint: #6b7280; --border: #d1d5db; --code: #f9fafb; }
+      body { background: #fff; }
+      main { width: auto; padding: 20px; }
+      .hero, .card, .metric, .stamp, .note { box-shadow: none; break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="hero">
+        <div class="pill-row">
+          <span class="pill good">Current smoke: passing</span>
+          <span class="pill good">Repo check: passing</span>
+          <span class="pill warn">Harness has 1 uncommitted change</span>
+          <span class="pill info">Generated 2026-06-16 21:12 UTC</span>
+        </div>
+        <h1>MemSWE / PAP-membench benchmark status</h1>
+        <p class="subtitle">Consolidated status of the benchmark specification, pi-based harness, MemoryBench adaptation work, test results, current artifacts, and next implementation steps.</p>
+      </div>
+      <aside class="stamp">
+        <div>
+          <strong>Current pushed harness commit</strong>
+          <pre>dbc8e1b9 feat(coding-agent): add memswe smoke harness</pre>
+        </div>
+        <div>
+          <p>Remote verified after push:</p>
+          <code>origin/main = dbc8e1b9b586cb144ba463bc99eb6aa9f37d06d7</code>
+        </div>
+      </aside>
+    </header>
+
+    <section class="grid four" aria-label="headline metrics">
+      <div class="metric">
+        <div class="label">Latest smoke run</div>
+        <div class="value status-good">PASS</div>
+        <div class="detail">Faux agent + visible/protected verifiers</div>
+      </div>
+      <div class="metric">
+        <div class="label">Visible tests</div>
+        <div class="value">2 / 2</div>
+        <div class="detail">invoice export visible smoke</div>
+      </div>
+      <div class="metric">
+        <div class="label">Protected tests</div>
+        <div class="value">2 / 2</div>
+        <div class="detail">route + function contract</div>
+      </div>
+      <div class="metric">
+        <div class="label">Repo check</div>
+        <div class="value status-good">PASS</div>
+        <div class="detail"><code>npm run check</code></div>
+      </div>
+    </section>
+
+    <section class="grid two">
+      <article class="card">
+        <h2>What has been completed</h2>
+        <div class="timeline">
+          <div class="event">
+            <strong>Repository reconciliation</strong>
+            <span><code>pi-memswe</code> was reconciled with the org fork and upstream. Local main, origin/main, and upstream/main were aligned before harness work was committed.</span>
+          </div>
+          <div class="event">
+            <strong>Harness guidance</strong>
+            <span><code>AGENTS.md</code> now contains MemSWE harness rules: fixed-runtime invariant, benchmark source-of-truth boundaries, faux-provider-first scaffolding, no hidden/protected leakage, deterministic-first scoring, and artifact discipline.</span>
+          </div>
+          <div class="event">
+            <strong>MemoryBench adaptation design</strong>
+            <span><code>packages/coding-agent/docs/memswe-memorybench-adaptation.md</code> maps MemoryBench concepts into MemSWE phases, checkpoints, normalized retrieved-memory items, memory-condition adapters, and reporting.</span>
+          </div>
+          <div class="event">
+            <strong>Faux-provider smoke runner</strong>
+            <span><code>packages/coding-agent/scripts/memswe-smoke-runner.ts</code> creates a temp fixture worktree, runs a deterministic pi <code>createAgentSession(...)</code> with faux provider, captures agent artifacts, runs verifiers, and emits a <code>run-record.json</code>.</span>
+          </div>
+          <div class="event">
+            <strong>SOUL.md</strong>
+            <span>PAP/MemSWE operating principles were added to <code>pi-memswe/SOUL.md</code>, root Hermes <code>~/.hermes/SOUL.md</code>, and the active <code>membench</code> profile soul.</span>
+          </div>
+        </div>
+      </article>
+
+      <article class="card">
+        <h2>Current repository state</h2>
+        <table>
+          <thead><tr><th>Repo</th><th>Status</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><code>pi-memswe</code></td>
+              <td><span class="status-warn">1 modified file</span></td>
+              <td>Current branch tracks <code>origin/main</code>. Latest pushed commit is <code>dbc8e1b9</code>. Local change improves verifier setup by creating a venv and running task <code>setup_command</code>.</td>
+            </tr>
+            <tr>
+              <td><code>memswe</code></td>
+              <td><span class="status-good">clean</span></td>
+              <td>Benchmark/spec repo clean on <code>main...origin/main</code>.</td>
+            </tr>
+            <tr>
+              <td><code>memorybench-memswe</code></td>
+              <td><span class="status-good">clean</span></td>
+              <td>Reference repo clean on <code>main...origin/main</code>.</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="note" style="margin-top: 16px;">
+          <strong>Open local harness change:</strong> <code>packages/coding-agent/scripts/memswe-smoke-runner.ts</code> now prepares a Python virtualenv, runs <code>pip install -r requirements.txt</code>, records <code>setup-result.json</code>, and executes verifiers through that venv. It passed smoke and <code>npm run check</code>, but is not yet committed.
+        </div>
+      </article>
+    </section>
+
+    <section class="card">
+      <h2>Latest verified test results</h2>
+      <p>Command run from <code>pi-memswe</code>:</p>
+      <pre>npm --prefix packages/coding-agent run memswe:smoke && npm run check</pre>
+      <div class="grid two" style="margin-top: 18px;">
+        <div class="card compact">
+          <h3>Smoke runner output</h3>
+          <ul>
+            <li><strong>Setup command:</strong> <code>pip install -r requirements.txt</code>, exit 0.</li>
+            <li><strong>Faux agent:</strong> session <code>s3</code> completed; 15 events captured.</li>
+            <li><strong>Hidden verifier:</strong> 1 hidden verifier isolated and skipped unless <code>--include-hidden</code> is passed.</li>
+            <li><strong>Visible verifier:</strong> <code>visible-smoke-export</code>, exit 0, 2 tests passed.</li>
+            <li><strong>Protected verifier:</strong> <code>protected-route-contract</code>, exit 0, 1 test passed.</li>
+            <li><strong>Protected verifier:</strong> <code>protected-export-function-contract</code>, exit 0, 1 test passed.</li>
+          </ul>
+        </div>
+        <div class="card compact">
+          <h3>Repo checks</h3>
+          <ul>
+            <li><code>biome check --write --error-on-warnings .</code>: 654 files checked, no fixes applied.</li>
+            <li><code>check:pinned-deps</code>: passed.</li>
+            <li><code>check:ts-imports</code>: passed.</li>
+            <li><code>check:shrinkwrap</code>: <code>packages/coding-agent/npm-shrinkwrap.json</code> up to date.</li>
+            <li><code>tsgo --noEmit</code>: passed.</li>
+            <li><code>check:browser-smoke</code>: passed.</li>
+          </ul>
+        </div>
+      </div>
+      <h3 style="margin-top: 22px;">Latest artifact paths</h3>
+      <pre>pi-memswe/.memswe-runs/2026-06-16T21-12-46-602Z/repo-gamma-invoice-export-001/run-record.json
+pi-memswe/.memswe-runs/2026-06-16T21-12-46-602Z/repo-gamma-invoice-export-001/setup-result.json
+pi-memswe/.memswe-runs/2026-06-16T21-12-46-602Z/repo-gamma-invoice-export-001/faux-agent-result.json
+pi-memswe/.memswe-runs/2026-06-16T21-12-46-602Z/repo-gamma-invoice-export-001/verifier-results.json</pre>
+    </section>
+
+    <section class="grid two">
+      <article class="card">
+        <h2>Benchmark status</h2>
+        <ul>
+          <li><strong>Task schema exists:</strong> MemSWE task descriptors use <code>uam-task.v0.1</code>.</li>
+          <li><strong>Run-record schema exists:</strong> emitted records use <code>uam-run.v0.1</code>.</li>
+          <li><strong>Phase 0 task inventory exists:</strong> five task designs cover convention retention, resumed bug investigation, requirement update, correction forgetting, and policy-scope memory.</li>
+          <li><strong>Worked smoke target:</strong> <code>repo-gamma-invoice-export-001</code> is runnable through the current smoke harness.</li>
+          <li><strong>Verifiers are deterministic-first:</strong> visible/protected tests run separately from the agent-visible fixture; hidden verifier is isolated.</li>
+          <li><strong>Trace predicates exist:</strong> current smoke marks them <code>not_evaluable</code> because the faux-agent run does not yet generate real memory/tool-use traces.</li>
+        </ul>
+      </article>
+      <article class="card">
+        <h2>Harness status</h2>
+        <ul>
+          <li><strong>Runtime path:</strong> pi coding-agent SDK via <code>createAgentSession(...)</code>.</li>
+          <li><strong>Current agent model:</strong> deterministic faux provider, no paid/real model calls.</li>
+          <li><strong>Current tools:</strong> no agent tools in smoke mode; verifiers run harness-side.</li>
+          <li><strong>Fixture isolation:</strong> task fixture copied into temp worktree.</li>
+          <li><strong>Verifier isolation:</strong> visible/protected verifier files copied into temp worktree; hidden verifier skipped by default.</li>
+          <li><strong>Python setup:</strong> local uncommitted runner change now creates a venv and runs task setup command before verifier execution.</li>
+          <li><strong>Artifact emission:</strong> agent events, messages, final response, verifier results, skipped hidden list, setup result, and run record.</li>
+        </ul>
+      </article>
+    </section>
+
+    <section class="card">
+      <h2>Memory-system readiness</h2>
+      <table>
+        <thead><tr><th>System / condition</th><th>Readiness</th><th>What works now</th><th>Remaining work</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><code>no_memory</code></td>
+            <td><span class="status-good">ready baseline</span></td>
+            <td>Agent sees current session prompt and repo state only.</td>
+            <td>Needs full multi-session orchestration beyond the current single graded-session smoke.</td>
+          </tr>
+          <tr>
+            <td><code>full_context</code></td>
+            <td><span class="status-good">ready conceptually</span></td>
+            <td>Defined in task design as transcript replay ceiling baseline.</td>
+            <td>Implement transcript assembly/injection in harness.</td>
+          </tr>
+          <tr>
+            <td><code>repository_docs</code></td>
+            <td><span class="status-good">ready conceptually</span></td>
+            <td>Defined as file/document memory through <code>docs/agent-project-memory/</code>.</td>
+            <td>Implement fact materialization, supersede/forget handling, and per-condition fixture mutation.</td>
+          </tr>
+          <tr>
+            <td><code>hindsight</code></td>
+            <td><span class="status-warn">pilot target</span></td>
+            <td>Selected as first real AMS; adapter notes exist.</td>
+            <td>Smoke local Docker/API, prove bank reset, retain, recall, settle polling, delete/forget, trace export.</td>
+          </tr>
+          <tr>
+            <td><code>filesystem</code> / <code>rag</code></td>
+            <td><span class="status-warn">reference baseline patterns</span></td>
+            <td>Existing MemoryBench providers can inform simple file/RAG baselines.</td>
+            <td>Adapt to code-session facts, lifecycle state, scope IDs, and run-record-compatible traces.</td>
+          </tr>
+          <tr>
+            <td><code>supermemory</code>, <code>mem0</code>, <code>zep</code></td>
+            <td><span class="status-warn">external-service candidates</span></td>
+            <td>Provider adapters exist in MemoryBench reference repo.</td>
+            <td>Require API/service setup and explicit inclusion; not immediate local Phase 0 conditions.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>Known gaps and risks</h2>
+      <div class="grid two">
+        <div>
+          <h3>Harness gaps</h3>
+          <ul>
+            <li>Only one task is currently exercised through the smoke runner.</li>
+            <li>Current smoke is single-session <code>s3</code>, not full multi-session memory-condition execution.</li>
+            <li>Faux agent does not edit files, so trace predicates remain diagnostic/not evaluable.</li>
+            <li>Run-record is structurally useful but not yet schema-validated in the smoke command.</li>
+            <li>Hidden tests are correctly isolated by default, but hidden-run mode still needs explicit policy around when it is allowed.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Benchmark gaps</h3>
+          <ul>
+            <li>Need stronger aggregation across task, condition, model, and repetition.</li>
+            <li>Need real patch capture and diff constraints for agent runs.</li>
+            <li>Need normalized memory trace JSONL for retrieval/write/delete events.</li>
+            <li>Need provider adapter contract implemented in <code>pi-memswe</code>.</li>
+            <li>Need Hindsight local reset/delete behavior proven before claiming AMS readiness.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Recommended next steps</h2>
+      <ol>
+        <li><strong>Commit the verified Python setup change.</strong> It makes verifier execution closer to declared task environment behavior by creating a venv and running <code>harbor.environment.setup_command</code>.</li>
+        <li><strong>Add run-record schema validation to the smoke runner.</strong> Load <code>../memswe/schema/run-record.schema.json</code> and fail if emitted records drift.</li>
+        <li><strong>Promote smoke phases into explicit harness phases.</strong> Split current script into <code>load_task</code>, <code>materialize_fixture</code>, <code>prepare_environment</code>, <code>run_agent_session</code>, <code>verify_artifacts</code>, and <code>emit_run_record</code>.</li>
+        <li><strong>Implement condition adapters for local baselines.</strong> Start with <code>no_memory</code>, <code>full_context</code>, and <code>repository_docs</code>; these do not require external services.</li>
+        <li><strong>Run full session sequence for one task.</strong> Execute <code>s1</code>, <code>s2</code>, and <code>s3</code> with condition-specific history delivery, not only the graded session.</li>
+        <li><strong>Capture patch/tool artifacts.</strong> For real agent runs, persist final diff, tool calls, stdout/stderr, final answer, and injected context spans.</li>
+        <li><strong>Make trace predicates evaluable.</strong> Connect predicate checks to retrieved memories, injected content, tool arguments, final response, and code diffs.</li>
+        <li><strong>Hindsight pilot spike.</strong> Run local Docker, create a bank per scope, retain seed facts, recall from a session prompt, delete/reset, and record provider IDs/latencies.</li>
+        <li><strong>Aggregate reporting.</strong> Add a report builder over `.memswe-runs/` that produces per-condition/task/model/repetition summaries aligned with MemSWE measurement docs.</li>
+      </ol>
+    </section>
+
+    <section class="card">
+      <h2>Immediate command checklist</h2>
+      <pre># from pi-memswe
+npm --prefix packages/coding-agent run memswe:smoke
+npm run check
+
+git status --short --branch
+git diff -- packages/coding-agent/scripts/memswe-smoke-runner.ts
+
+# if the current venv/setup change is accepted
+git add packages/coding-agent/scripts/memswe-smoke-runner.ts packages/coding-agent/docs/memswe-benchmark-status.html
+git commit -m "feat(coding-agent): prepare memswe verifier environment"
+git push origin main</pre>
+    </section>
+
+    <p class="footer">Generated from current local artifacts and command output in <code>/Users/eduardojaviergarcialopez/AgenticEngineering/PAP-membench</code>. This document is intentionally artifact-backed; update it after each harness milestone or benchmark pilot.</p>
+  </main>
+</body>
+</html>
