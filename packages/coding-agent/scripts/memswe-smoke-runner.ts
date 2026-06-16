@@ -17,7 +17,7 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "../src/index.ts";
-import { preparePythonEnvironment } from "./memswe-smoke-runner-lib.ts";
+import { inferVerifierAssets, preparePythonEnvironment } from "./memswe-smoke-runner-lib.ts";
 
 const DEFAULT_TASK_ID = "repo-gamma-invoice-export-001";
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -352,14 +352,11 @@ async function runCommand(command: VerifierCommand, cwd: string, timeoutMs: numb
 	});
 }
 
-async function copyVerifierFiles(taskDir: string, workdir: string, includeHidden: boolean): Promise<void> {
-	const testsDir = join(taskDir, "tests");
-	const workTestsDir = join(workdir, "tests");
-	await mkdir(workTestsDir, { recursive: true });
-	const files = ["conftest.py", "test_invoice_export_protected.py"];
-	if (includeHidden) files.push("test_invoice_export_hidden.py");
-	for (const file of files) {
-		await copyFile(join(testsDir, file), join(workTestsDir, file));
+async function copyVerifierFiles(taskDir: string, workdir: string, task: TaskYaml, includeHidden: boolean): Promise<void> {
+	const assets = inferVerifierAssets(taskDir, workdir, task, includeHidden);
+	for (const asset of assets) {
+		await mkdir(dirname(asset.destination), { recursive: true });
+		await copyFile(asset.source, asset.destination);
 	}
 }
 
@@ -380,7 +377,7 @@ async function main(): Promise<void> {
 	await rm(dirname(workdir), { recursive: true, force: true });
 	await mkdir(workdir, { recursive: true });
 	await cp(join(taskDir, "fixture"), workdir, { recursive: true });
-	await copyVerifierFiles(taskDir, workdir, includeHidden);
+	await copyVerifierFiles(taskDir, workdir, parsed, includeHidden);
 	await mkdir(artifactsDir, { recursive: true });
 	const pythonEnvironment = await preparePythonEnvironment(workdir, parsed.harbor?.environment?.setup_command);
 	if (pythonEnvironment.setupResult) {

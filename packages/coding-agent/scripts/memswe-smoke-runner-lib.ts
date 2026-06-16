@@ -1,6 +1,31 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdir, symlink } from "node:fs/promises";
 import { join } from "node:path";
+
+export type VerifierKind = "visible" | "hidden" | "protected";
+
+export type TaskYaml = {
+	memswe?: {
+		verifiers?: {
+			visible_tests?: VerifierSpec[];
+			hidden_tests?: VerifierSpec[];
+			protected_tests?: VerifierSpec[];
+		};
+	};
+};
+
+type VerifierSpec = {
+	command?: string;
+	agent_visible?: boolean;
+};
+
+export type VerifierAsset = {
+	kind: VerifierKind;
+	source: string;
+	destination: string;
+	agentVisible: boolean;
+};
 
 export type ShellCommandResult = {
 	command: string;
@@ -76,4 +101,46 @@ export async function preparePythonEnvironment(
 		throw new Error(`Verifier setup failed: ${setupResult.stderr || setupResult.stdout}`);
 	}
 	return { shimDir: venvBinDir, setupResult };
+}
+
+export function inferVerifierAssets(taskDir: string, workdir: string, task: TaskYaml, includeHidden: boolean): VerifierAsset[] {
+	const verifiers = task.memswe?.verifiers;
+	const groups: Array<[VerifierKind, VerifierSpec[] | undefined]> = [
+		["visible", verifiers?.visible_tests],
+		["protected", verifiers?.protected_tests],
+	];
+	if (includeHidden) groups.push(["hidden", verifiers?.hidden_tests]);
+
+	const assets = new Map<string, VerifierAsset>();
+	for (const [kind, specs] of groups) {
+		for (const spec of specs ?? []) {
+			for (const verifierPath of verifierPathsFromCommand(spec.command ?? "")) {
+				assets.set(`${kind}:${verifierPath}`, {
+					kind,
+					source: join(taskDir, verifierPath),
+					destination: join(workdir, verifierPath),
+					agentVisible: kind === "visible" && spec.agent_visible === true,
+				});
+			}
+		}
+	}
+
+	const needsPytestSupport = [...assets.values()].some((asset) => asset.source.endsWith(".py"));
+	const conftestPath = "tests/conftest.py";
+	if (needsPytestSupport && existsSync(join(taskDir, conftestPath))) {
+		assets.set(`protected-support:${conftestPath}`, {
+			kind: "protected",
+			source: join(taskDir, conftestPath),
+			destination: join(workdir, conftestPath),
+			agentVisible: false,
+		});
+	}
+
+	return [...assets.values()];
+}
+
+function verifierPathsFromCommand(command: string): string[] {
+	return [...command.matchAll(/(?:^|\s)(tests\/[A-Za-z0-9_./-]+\.(?:py|ts|tsx|js|jsx))(?:\:\:[^\s]+)?/g)].map(
+		(match) => match[1],
+	);
 }
