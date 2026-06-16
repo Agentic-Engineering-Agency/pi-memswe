@@ -17,7 +17,12 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "../src/index.ts";
-import { inferVerifierAssets, preparePythonEnvironment } from "./memswe-smoke-runner-lib.ts";
+import {
+	inferVerifierAssets,
+	initializeWorktreeBaseline,
+	preparePythonEnvironment,
+	writePatchArtifacts,
+} from "./memswe-smoke-runner-lib.ts";
 
 const DEFAULT_TASK_ID = "repo-gamma-invoice-export-001";
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -379,18 +384,20 @@ async function main(): Promise<void> {
 	await cp(join(taskDir, "fixture"), workdir, { recursive: true });
 	await copyVerifierFiles(taskDir, workdir, parsed, includeHidden);
 	await mkdir(artifactsDir, { recursive: true });
-	const pythonEnvironment = await preparePythonEnvironment(workdir, parsed.harbor?.environment?.setup_command);
-	if (pythonEnvironment.setupResult) {
-		await writeFile(join(artifactsDir, "setup-result.json"), `${JSON.stringify(pythonEnvironment.setupResult, null, "	")}\n`);
-		console.log(
-			`Finished setup command with exit ${pythonEnvironment.setupResult.exit_code ?? `signal ${pythonEnvironment.setupResult.signal ?? "timeout"}`}`,
-		);
-	}
+	await initializeWorktreeBaseline(workdir);
 
 	const fauxAgentResult = skipFauxAgent ? undefined : await runFauxAgentSession(parsed, taskDir, workdir, artifactsDir);
 	if (fauxAgentResult) {
 		console.log(
 			`Faux agent session ${fauxAgentResult.session_id} finished with ${fauxAgentResult.status}; captured ${fauxAgentResult.event_count} event(s).`,
+		);
+	}
+	const patchArtifacts = await writePatchArtifacts(workdir, artifactsDir);
+	const pythonEnvironment = await preparePythonEnvironment(workdir, parsed.harbor?.environment?.setup_command);
+	if (pythonEnvironment.setupResult) {
+		await writeFile(join(artifactsDir, "setup-result.json"), `${JSON.stringify(pythonEnvironment.setupResult, null, "	")}\n`);
+		console.log(
+			`Finished setup command with exit ${pythonEnvironment.setupResult.exit_code ?? `signal ${pythonEnvironment.setupResult.signal ?? "timeout"}`}`,
 		);
 	}
 
@@ -446,6 +453,9 @@ async function main(): Promise<void> {
 					agent_events: join(artifactsDir, "agent-events.json"),
 					agent_messages: join(artifactsDir, "agent-messages.json"),
 					agent_final_response: join(artifactsDir, "agent-final-response.txt"),
+					agent_patch: patchArtifacts.agentPatch,
+					worktree_diff: patchArtifacts.worktreeDiff,
+					changed_files: patchArtifacts.changedFiles,
 					verifier_results: join(artifactsDir, "verifier-results.json"),
 					skipped_hidden_verifiers: join(artifactsDir, "skipped-hidden-verifiers.json"),
 				},

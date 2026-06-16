@@ -1,10 +1,16 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 import { parse } from "yaml";
-import { inferVerifierAssets, preparePythonEnvironment, type TaskYaml } from "../../scripts/memswe-smoke-runner-lib.ts";
+import {
+	inferVerifierAssets,
+	initializeWorktreeBaseline,
+	preparePythonEnvironment,
+	type TaskYaml,
+	writePatchArtifacts,
+} from "../../scripts/memswe-smoke-runner-lib.ts";
 
 const CODING_AGENT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const PI_ROOT = resolve(CODING_AGENT_ROOT, "../..");
@@ -51,5 +57,27 @@ describe("memswe smoke runner verifier assets", () => {
 		const assets = inferVerifierAssets(taskDir, workdir, task, true);
 
 		expect(assets.map((asset) => asset.destination)).toContain(join(workdir, "tests/test_invoice_export_hidden.py"));
+	});
+});
+
+describe("memswe smoke runner patch artifacts", () => {
+	test("emits stable empty no-op patch artifacts", async () => {
+		const workdir = await mkdtemp(join(tmpdir(), "memswe-patch-test-work-"));
+		const artifactsDir = await mkdtemp(join(tmpdir(), "memswe-patch-test-artifacts-"));
+		try {
+			await writeFile(join(workdir, "example.txt"), "baseline\n");
+			await mkdir(join(workdir, "src"));
+			await writeFile(join(workdir, "src/module.txt"), "module\n");
+			await initializeWorktreeBaseline(workdir);
+
+			const artifacts = await writePatchArtifacts(workdir, artifactsDir);
+
+			expect(await readFile(artifacts.agentPatch, "utf8")).toBe("");
+			expect(await readFile(artifacts.worktreeDiff, "utf8")).toBe("");
+			expect(JSON.parse(await readFile(artifacts.changedFiles, "utf8"))).toEqual([]);
+		} finally {
+			await rm(workdir, { recursive: true, force: true });
+			await rm(artifactsDir, { recursive: true, force: true });
+		}
 	});
 });

@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, symlink } from "node:fs/promises";
+import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 export type VerifierKind = "visible" | "hidden" | "protected";
@@ -34,6 +34,12 @@ export type ShellCommandResult = {
 	stdout: string;
 	stderr: string;
 	duration_ms: number;
+};
+
+export type PatchArtifacts = {
+	agentPatch: string;
+	worktreeDiff: string;
+	changedFiles: string;
 };
 
 export async function runShellCommand(
@@ -143,4 +149,41 @@ function verifierPathsFromCommand(command: string): string[] {
 	return [...command.matchAll(/(?:^|\s)(tests\/[A-Za-z0-9_./-]+\.(?:py|ts|tsx|js|jsx))(?:\:\:[^\s]+)?/g)].map(
 		(match) => match[1],
 	);
+}
+
+export async function initializeWorktreeBaseline(workdir: string): Promise<void> {
+	const commands = [
+		"git init",
+		"git add .",
+		"git -c user.name=MemSWE -c user.email=memswe@example.invalid commit -m baseline --no-gpg-sign",
+	];
+	for (const command of commands) {
+		const result = await runShellCommand(command, workdir, process.env, 120_000);
+		if (result.exit_code !== 0) {
+			throw new Error(`Failed to initialize temp worktree baseline with ${command}: ${result.stderr || result.stdout}`);
+		}
+	}
+}
+
+export async function writePatchArtifacts(workdir: string, artifactsDir: string): Promise<PatchArtifacts> {
+	const worktreeDiffPath = join(artifactsDir, "worktree-diff.patch");
+	const agentPatchPath = join(artifactsDir, "agent.patch");
+	const changedFilesPath = join(artifactsDir, "changed-files.json");
+	const diff = await runShellCommand("git diff --binary", workdir, process.env, 120_000);
+	if (diff.exit_code !== 0) {
+		throw new Error(`Failed to collect worktree diff: ${diff.stderr || diff.stdout}`);
+	}
+	const tracked = await runShellCommand("git diff --name-only", workdir, process.env, 120_000);
+	if (tracked.exit_code !== 0) {
+		throw new Error(`Failed to collect changed tracked files: ${tracked.stderr || tracked.stdout}`);
+	}
+	const untracked = await runShellCommand("git ls-files --others --exclude-standard", workdir, process.env, 120_000);
+	if (untracked.exit_code !== 0) {
+		throw new Error(`Failed to collect untracked files: ${untracked.stderr || untracked.stdout}`);
+	}
+	const changedFiles = [...new Set([...tracked.stdout.split("\n"), ...untracked.stdout.split("\n")].filter(Boolean))].sort();
+	await writeFile(worktreeDiffPath, diff.stdout);
+	await writeFile(agentPatchPath, diff.stdout);
+	await writeFile(changedFilesPath, `${JSON.stringify(changedFiles, null, "	")}\n`);
+	return { agentPatch: agentPatchPath, worktreeDiff: worktreeDiffPath, changedFiles: changedFilesPath };
 }
