@@ -31,8 +31,10 @@ const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "../../..");
 const MEMSWE_ROOT = resolve(REPO_ROOT, "../memswe");
 const RUNS_ROOT = join(REPO_ROOT, ".memswe-runs");
+const MEMORY_CONDITION_IDS = ["no_memory", "full_context", "repository_docs", "hindsight"] as const;
 
 type VerifierKind = "visible" | "hidden" | "protected";
+type MemoryConditionId = (typeof MEMORY_CONDITION_IDS)[number];
 
 type TaskYaml = {
 	schema_version?: string;
@@ -149,6 +151,12 @@ type SuiteTaskResult = {
 	error: string | null;
 };
 
+type ConditionPrepareResult = {
+	condition_id: MemoryConditionId;
+	memory_system: string | null;
+	artifact_paths: Record<string, string>;
+};
+
 function getArgumentValue(name: string): string | undefined {
 	const prefix = `${name}=`;
 	const withEquals = process.argv.find((arg) => arg.startsWith(prefix));
@@ -160,6 +168,12 @@ function getArgumentValue(name: string): string | undefined {
 
 function hasFlag(name: string): boolean {
 	return process.argv.includes(name);
+}
+
+function parseConditionId(value: string | undefined): MemoryConditionId {
+	const conditionId = value ?? "no_memory";
+	if (MEMORY_CONDITION_IDS.includes(conditionId as MemoryConditionId)) return conditionId as MemoryConditionId;
+	throw new Error(`Invalid --condition=${conditionId}; expected one of ${MEMORY_CONDITION_IDS.join(", ")}`);
 }
 
 function isTaskYaml(value: unknown): value is TaskYaml {
@@ -381,7 +395,25 @@ async function copyVerifierFiles(taskDir: string, workdir: string, task: TaskYam
 	}
 }
 
-async function runTask(taskId: string, timestamp: string, includeHidden: boolean, skipFauxAgent: boolean): Promise<TaskRunResult> {
+async function prepareCondition(conditionId: MemoryConditionId, artifactsDir: string): Promise<ConditionPrepareResult> {
+	if (conditionId !== "no_memory") throw new Error(`Memory condition ${conditionId} is not implemented`);
+	const conditionResultPath = join(artifactsDir, "condition-result.json");
+	const result: ConditionPrepareResult = {
+		condition_id: "no_memory",
+		memory_system: null,
+		artifact_paths: { condition_result: conditionResultPath },
+	};
+	await writeFile(conditionResultPath, `${JSON.stringify(result, null, "	")}\n`);
+	return result;
+}
+
+async function runTask(
+	taskId: string,
+	timestamp: string,
+	includeHidden: boolean,
+	skipFauxAgent: boolean,
+	conditionId: MemoryConditionId,
+): Promise<TaskRunResult> {
 	const taskDir = join(MEMSWE_ROOT, "tasks", taskId);
 	const taskYamlPath = join(taskDir, "task.yaml");
 	const parsed = parse(await readFile(taskYamlPath, "utf8"));
@@ -396,6 +428,7 @@ async function runTask(taskId: string, timestamp: string, includeHidden: boolean
 	await copyVerifierFiles(taskDir, workdir, parsed, includeHidden);
 	await mkdir(artifactsDir, { recursive: true });
 	await initializeWorktreeBaseline(workdir);
+	const conditionResult = await prepareCondition(conditionId, artifactsDir);
 
 	const fauxAgentResult = skipFauxAgent ? undefined : await runFauxAgentSession(parsed, taskDir, workdir, artifactsDir);
 	if (fauxAgentResult) {
@@ -441,14 +474,13 @@ async function runTask(taskId: string, timestamp: string, includeHidden: boolean
 	const verifiersPassed = results.length > 0 && passed(results) === results.length;
 	const agentPassed = fauxAgentResult?.status !== "errored";
 	const allPassed = verifiersPassed && agentPassed;
-	const condition = parsed.memswe?.memory_conditions?.[0];
 	const record: RunRecord = {
 		run_id: runId,
 		task_id: parsed.harbor?.metadata?.task_id ?? taskId,
 		schema_version: "uam-run.v0.1",
 		condition: {
-			condition_id: condition?.id ?? "no_memory",
-			memory_system: condition?.memory_system ?? null,
+			condition_id: conditionResult.condition_id,
+			memory_system: conditionResult.memory_system,
 			baseline_kind: "verifier_only_smoke",
 			model_id: "none/verifier-only",
 			repetition_index: 1,
@@ -467,6 +499,7 @@ async function runTask(taskId: string, timestamp: string, includeHidden: boolean
 					agent_patch: patchArtifacts.agentPatch,
 					worktree_diff: patchArtifacts.worktreeDiff,
 					changed_files: patchArtifacts.changedFiles,
+					...conditionResult.artifact_paths,
 					verifier_results: join(artifactsDir, "verifier-results.json"),
 					skipped_hidden_verifiers: join(artifactsDir, "skipped-hidden-verifiers.json"),
 				},
@@ -540,9 +573,10 @@ async function runTask(taskId: string, timestamp: string, includeHidden: boolean
 async function main(): Promise<void> {
 	const includeHidden = hasFlag("--include-hidden");
 	const skipFauxAgent = hasFlag("--skip-faux-agent");
+	const conditionId = parseConditionId(getArgumentValue("--condition"));
 	const timestamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
 	if (!hasFlag("--all-tasks")) {
-		const result = await runTask(getArgumentValue("--task-id") ?? DEFAULT_TASK_ID, timestamp, includeHidden, skipFauxAgent);
+		const result = await runTask(getArgumentValue("--task-id") ?? DEFAULT_TASK_ID, timestamp, includeHidden, skipFauxAgent, conditionId);
 		if (!result.allPassed) process.exitCode = 1;
 		return;
 	}
@@ -554,7 +588,7 @@ async function main(): Promise<void> {
 	let hasFailure = false;
 	for (const taskId of await discoverTaskIds(MEMSWE_ROOT)) {
 		try {
-			const result = await runTask(taskId, timestamp, includeHidden, skipFauxAgent);
+			const result = await runTask(taskId, timestamp, includeHidden, skipFauxAgent, conditionId);
 			const status = result.allPassed ? "passed" : "failed";
 			hasFailure = hasFailure || !result.allPassed;
 			taskResults.push({
