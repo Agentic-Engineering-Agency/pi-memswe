@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 import { parse } from "yaml";
 import {
+	discoverTaskIds,
 	inferVerifierAssets,
 	initializeWorktreeBaseline,
 	preparePythonEnvironment,
@@ -93,6 +94,19 @@ describe("memswe smoke runner run-record validation", () => {
 		delete record.condition.condition_id;
 
 		expect(() => validateRunRecordShape(record)).toThrow("Missing condition_id");
+	});
+});
+
+describe("memswe smoke runner task discovery", () => {
+	test("discovers task descriptors sorted by task id", async () => {
+		await expect(discoverTaskIds(MEMSWE_ROOT)).resolves.toEqual([
+			"repo-alpha-convention-newsletter-001",
+			"repo-beta-cache-continuation-001",
+			"repo-delta-billing-url-001",
+			"repo-epsilon-control-001",
+			"repo-epsilon-http-policy-001",
+			"repo-gamma-invoice-export-001",
+		]);
 	});
 });
 

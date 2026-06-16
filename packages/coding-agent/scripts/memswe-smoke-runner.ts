@@ -18,6 +18,7 @@ import {
 	SettingsManager,
 } from "../src/index.ts";
 import {
+	discoverTaskIds,
 	inferVerifierAssets,
 	initializeWorktreeBaseline,
 	preparePythonEnvironment,
@@ -132,6 +133,20 @@ type RunRecord = {
 		postgres_run_ref: string | null;
 		artifacts_dir: string;
 	};
+};
+
+type TaskRunResult = {
+	taskId: string;
+	allPassed: boolean;
+	runRecordPath: string;
+};
+
+type SuiteTaskResult = {
+	task_id: string;
+	status: "passed" | "failed";
+	run_record: string | null;
+	failed_phase: string | null;
+	error: string | null;
 };
 
 function getArgumentValue(name: string): string | undefined {
@@ -366,17 +381,12 @@ async function copyVerifierFiles(taskDir: string, workdir: string, task: TaskYam
 	}
 }
 
-async function main(): Promise<void> {
-	const taskId = getArgumentValue("--task-id") ?? DEFAULT_TASK_ID;
-	const includeHidden = hasFlag("--include-hidden");
-	const skipFauxAgent = hasFlag("--skip-faux-agent");
+async function runTask(taskId: string, timestamp: string, includeHidden: boolean, skipFauxAgent: boolean): Promise<TaskRunResult> {
 	const taskDir = join(MEMSWE_ROOT, "tasks", taskId);
 	const taskYamlPath = join(taskDir, "task.yaml");
 	const parsed = parse(await readFile(taskYamlPath, "utf8"));
 	if (!isTaskYaml(parsed)) throw new Error(`Expected object task YAML at ${taskYamlPath}`);
 
-	const now = new Date();
-	const timestamp = now.toISOString().replaceAll(":", "-").replaceAll(".", "-");
 	const runId = `memswe-smoke-${taskId}-${timestamp}`;
 	const artifactsDir = join(RUNS_ROOT, timestamp, taskId);
 	const workdir = join(tmpdir(), runId, "worktree");
@@ -521,9 +531,62 @@ async function main(): Promise<void> {
 		join(artifactsDir, "skipped-hidden-verifiers.json"),
 		`${JSON.stringify(skippedHiddenCommands, null, "	")}\n`,
 	);
-	await writeFile(join(artifactsDir, "run-record.json"), `${JSON.stringify(record, null, "	")}\n`);
-	console.log(`Wrote ${relative(REPO_ROOT, join(artifactsDir, "run-record.json"))}`);
-	if (!allPassed) process.exitCode = 1;
+	const runRecordPath = join(artifactsDir, "run-record.json");
+	await writeFile(runRecordPath, `${JSON.stringify(record, null, "	")}\n`);
+	console.log(`Wrote ${relative(REPO_ROOT, runRecordPath)}`);
+	return { taskId, allPassed, runRecordPath };
+}
+
+async function main(): Promise<void> {
+	const includeHidden = hasFlag("--include-hidden");
+	const skipFauxAgent = hasFlag("--skip-faux-agent");
+	const timestamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
+	if (!hasFlag("--all-tasks")) {
+		const result = await runTask(getArgumentValue("--task-id") ?? DEFAULT_TASK_ID, timestamp, includeHidden, skipFauxAgent);
+		if (!result.allPassed) process.exitCode = 1;
+		return;
+	}
+
+	const continueOnTaskFailure = hasFlag("--continue-on-task-failure");
+	const suiteDir = join(RUNS_ROOT, timestamp);
+	await mkdir(suiteDir, { recursive: true });
+	const taskResults: SuiteTaskResult[] = [];
+	let hasFailure = false;
+	for (const taskId of await discoverTaskIds(MEMSWE_ROOT)) {
+		try {
+			const result = await runTask(taskId, timestamp, includeHidden, skipFauxAgent);
+			const status = result.allPassed ? "passed" : "failed";
+			hasFailure = hasFailure || !result.allPassed;
+			taskResults.push({
+				task_id: taskId,
+				status,
+				run_record: result.runRecordPath,
+				failed_phase: result.allPassed ? null : "verification",
+				error: null,
+			});
+			if (!result.allPassed && !continueOnTaskFailure) break;
+		} catch (caught) {
+			hasFailure = true;
+			taskResults.push({
+				task_id: taskId,
+				status: "failed",
+				run_record: null,
+				failed_phase: "harness",
+				error: caught instanceof Error ? caught.message : String(caught),
+			});
+			if (!continueOnTaskFailure) break;
+		}
+	}
+
+	const summary = {
+		schema_version: "memswe-suite-summary.v0.1",
+		created_at: new Date().toISOString(),
+		task_results: taskResults,
+	};
+	const suiteSummaryPath = join(suiteDir, "suite-summary.json");
+	await writeFile(suiteSummaryPath, `${JSON.stringify(summary, null, "	")}\n`);
+	console.log(`Wrote ${relative(REPO_ROOT, suiteSummaryPath)}`);
+	if (hasFailure) process.exitCode = 1;
 }
 
 await main();

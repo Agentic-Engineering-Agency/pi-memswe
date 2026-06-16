@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 export type VerifierKind = "visible" | "hidden" | "protected";
@@ -213,4 +213,13 @@ export function validateRunRecordShape(record: unknown): void {
 
 function isRunRecordLike(value: unknown): value is RunRecordLike {
 	return typeof value === "object" && value !== null;
+}
+
+export async function discoverTaskIds(memsweRoot: string): Promise<string[]> {
+	const tasksRoot = join(memsweRoot, "tasks");
+	const entries = await readdir(tasksRoot, { withFileTypes: true });
+	return entries
+		.filter((entry) => entry.isDirectory() && existsSync(join(tasksRoot, entry.name, "task.yaml")))
+		.map((entry) => entry.name)
+		.sort();
 }
