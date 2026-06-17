@@ -147,6 +147,18 @@ async function loadTaskFacts(): Promise<FactSpec[]> {
 	return validFactsBeforeSession(task, resolveGradedSessionId(task));
 }
 
+function factMetadata(fact: FactSpec): Record<string, string> {
+	const metadata: Record<string, string> = {
+		task_id: TASK_ID,
+		fact_id: fact.id!,
+	};
+	for (const key of ["first_valid_session", "invalid_after_session", "forget_requested_session", "expected_use"] as const) {
+		const value = fact[key];
+		if (value) metadata[key] = value;
+	}
+	return metadata;
+}
+
 async function runSmoke(trace: TraceEvent[], predicateResults: Record<string, boolean>): Promise<SmokeResult> {
 	const facts = await loadTaskFacts();
 	await requestJson("GET", "/health", trace);
@@ -163,14 +175,7 @@ async function runSmoke(trace: TraceEvent[], predicateResults: Record<string, bo
 			context: `MemSWE ${TASK_ID} seeded fact ${fact.id}; first_valid_session=${fact.first_valid_session ?? "unknown"}`,
 			document_id: `memswe-${TASK_ID}-${fact.id}`,
 			tags: ["memswe", TASK_ID, fact.id!],
-			metadata: {
-				task_id: TASK_ID,
-				fact_id: fact.id!,
-				first_valid_session: fact.first_valid_session ?? null,
-				invalid_after_session: fact.invalid_after_session ?? null,
-				forget_requested_session: fact.forget_requested_session ?? null,
-				expected_use: fact.expected_use ?? null,
-			},
+			metadata: factMetadata(fact),
 		})),
 	});
 	const listed = await pollUntil(trace, "retained gamma header fact", (json) =>
@@ -237,6 +242,11 @@ async function main(): Promise<void> {
 	} catch (caught) {
 		const message = caught instanceof Error ? caught.message : String(caught);
 		const phase = failedPhase(trace);
+		const error = {
+			failed_phase: phase,
+			message,
+			guidance: failureGuidance(message, phase),
+		};
 		const result: SmokeResult = {
 			schema_version: "memswe-hindsight-smoke.v0.1",
 			created_at: new Date().toISOString(),
@@ -245,15 +255,11 @@ async function main(): Promise<void> {
 			status: "failed",
 			trace,
 			predicate_results: predicateResults,
-			error: {
-				failed_phase: phase,
-				message,
-				guidance: failureGuidance(message, phase),
-			},
+			error,
 		};
-		await writeFile(join(artifactsDir, "hindsight-smoke-result.json"), `${JSON.stringify(result, null, "\t")}\n`);
+		await writeFile(join(artifactsDir, "hindsight-smoke-result.json"), `${JSON.stringify(result, null, "	")}\n`);
 		console.error(`Hindsight smoke failed: ${message}`);
-		console.error(result.error.guidance);
+		console.error(error.guidance);
 		console.log(`Wrote ${relative(REPO_ROOT, join(artifactsDir, "hindsight-smoke-result.json"))}`);
 		process.exitCode = 1;
 	}
