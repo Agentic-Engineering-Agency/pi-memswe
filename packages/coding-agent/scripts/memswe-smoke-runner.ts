@@ -46,6 +46,9 @@ type TaskYaml = {
 	memswe?: {
 		memory_conditions?: Array<{ id?: string; memory_system?: string }>;
 		session_sequence?: SessionSpec[];
+		facts?: {
+			introduce?: FactSpec[];
+		};
 		verifiers?: {
 			visible_tests?: VerifierSpec[];
 			hidden_tests?: VerifierSpec[];
@@ -67,6 +70,15 @@ type VerifierSpec = {
 	agent_visible?: boolean;
 	f2p?: boolean;
 	p2p?: boolean;
+};
+
+type FactSpec = {
+	id?: string;
+	text?: string;
+	first_valid_session?: string;
+	invalid_after_session?: string;
+	forget_requested_session?: string;
+	expected_use?: string;
 };
 
 type VerifierCommand = {
@@ -395,16 +407,65 @@ async function copyVerifierFiles(taskDir: string, workdir: string, task: TaskYam
 	}
 }
 
-async function prepareCondition(conditionId: MemoryConditionId, artifactsDir: string): Promise<ConditionPrepareResult> {
-	if (conditionId !== "no_memory") throw new Error(`Memory condition ${conditionId} is not implemented`);
+async function prepareCondition(conditionId: MemoryConditionId, task: TaskYaml, workdir: string, artifactsDir: string): Promise<ConditionPrepareResult> {
+	if (conditionId !== "no_memory" && conditionId !== "repository_docs") {
+		throw new Error(`Memory condition ${conditionId} is not implemented`);
+	}
 	const conditionResultPath = join(artifactsDir, "condition-result.json");
+	const artifactPaths: Record<string, string> = { condition_result: conditionResultPath };
+	if (conditionId === "repository_docs") {
+		const docsPath = join(workdir, "docs/agent-project-memory/memswe-facts.md");
+		const docsArtifactPath = join(artifactsDir, "repository-docs/memswe-facts.md");
+		const docs = repositoryDocsMarkdown(task);
+		await mkdir(dirname(docsPath), { recursive: true });
+		await mkdir(dirname(docsArtifactPath), { recursive: true });
+		await writeFile(docsPath, docs);
+		await writeFile(docsArtifactPath, docs);
+		artifactPaths.repository_docs = docsArtifactPath;
+	}
 	const result: ConditionPrepareResult = {
-		condition_id: "no_memory",
+		condition_id: conditionId,
 		memory_system: null,
-		artifact_paths: { condition_result: conditionResultPath },
+		artifact_paths: artifactPaths,
 	};
 	await writeFile(conditionResultPath, `${JSON.stringify(result, null, "	")}\n`);
 	return result;
+}
+
+function repositoryDocsMarkdown(task: TaskYaml): string {
+	const gradedSession = resolveGradedSession(task);
+	const facts = validFactsBeforeSession(task, gradedSession.session_id!);
+	const taskId = task.harbor?.metadata?.task_id ?? DEFAULT_TASK_ID;
+	return `${[
+		"# Agent Project Memory",
+		"",
+		`Task: ${taskId}`,
+		"Condition: repository_docs",
+		"",
+		"## Valid remembered facts",
+		"",
+		...facts.map((fact) => `- ${fact.text}`),
+	].join("\n")}\n`;
+}
+
+function validFactsBeforeSession(task: TaskYaml, sessionId: string): FactSpec[] {
+	return (task.memswe?.facts?.introduce ?? []).filter((fact) => {
+		if (!fact.text || fact.expected_use === "forbidden") return false;
+		if (compareSessionIds(fact.first_valid_session, sessionId) > 0) return false;
+		if (compareSessionIds(fact.invalid_after_session, sessionId) <= 0) return false;
+		if (compareSessionIds(fact.forget_requested_session, sessionId) <= 0) return false;
+		return true;
+	});
+}
+
+function compareSessionIds(left: string | undefined, right: string): number {
+	if (!left) return 1;
+	return sessionIndex(left) - sessionIndex(right);
+}
+
+function sessionIndex(sessionId: string): number {
+	const parsed = Number(sessionId.slice(1));
+	return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
 }
 
 async function runTask(
@@ -427,8 +488,8 @@ async function runTask(
 	await cp(join(taskDir, "fixture"), workdir, { recursive: true });
 	await copyVerifierFiles(taskDir, workdir, parsed, includeHidden);
 	await mkdir(artifactsDir, { recursive: true });
+	const conditionResult = await prepareCondition(conditionId, parsed, workdir, artifactsDir);
 	await initializeWorktreeBaseline(workdir);
-	const conditionResult = await prepareCondition(conditionId, artifactsDir);
 
 	const fauxAgentResult = skipFauxAgent ? undefined : await runFauxAgentSession(parsed, taskDir, workdir, artifactsDir);
 	if (fauxAgentResult) {
