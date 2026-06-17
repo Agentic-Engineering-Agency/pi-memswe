@@ -325,7 +325,7 @@
           </div>
           <div class="event">
             <strong>Condition scaffold</strong>
-            <span><code>--condition=no_memory</code> is the verified default. <code>repository_docs</code> currently materializes remembered facts into project docs and records a condition artifact, but remains harness plumbing rather than a completed benchmark baseline. <code>full_context</code> and <code>hindsight</code> fail closed as not implemented.</span>
+            <span><code>--condition=no_memory</code> is the verified default. <code>repository_docs</code> currently materializes remembered facts into project docs and records a condition artifact, but remains harness plumbing rather than a completed benchmark baseline. <code>full_context</code> and <code>hindsight</code> fail closed in <code>memswe:smoke</code>; the separate <code>memswe:hindsight-smoke</code> command is a real local AMS/API probe.</span>
           </div>
         </div>
       </article>
@@ -448,8 +448,8 @@ pi-memswe/.memswe-runs/&lt;timestamp&gt;/&lt;task-id&gt;/changed-files.json</pre
           <tr>
             <td><code>hindsight</code></td>
             <td><span class="status-warn">pilot target</span></td>
-            <td>Recognized as a condition ID only; no real AMS calls are made by smoke.</td>
-            <td>Local Docker/API pilot requires a token, bank reset proof, retain/recall/delete behavior, settle polling, trace export, and complete local trace readiness.</td>
+            <td>Recognized as a condition ID only in <code>memswe:smoke</code>. Separate <code>memswe:hindsight-smoke</code> can make real local Hindsight retain/recall/delete API calls and may incur configured model/token usage.</td>
+            <td>Local Docker/API pilot requires explicit token scope, bank reset proof, retain/recall/delete behavior, settle polling, trace export, and complete local trace readiness.</td>
           </tr>
           <tr>
             <td><code>filesystem</code> / <code>rag</code></td>
@@ -503,7 +503,7 @@ pi-memswe/.memswe-runs/&lt;timestamp&gt;/&lt;task-id&gt;/changed-files.json</pre
         <li><strong>Run full session sequence for one task.</strong> Execute <code>s1</code>, <code>s2</code>, and <code>s3</code> with condition-specific history delivery, not only the graded session.</li>
         <li><strong>Capture real patch/tool artifacts.</strong> For real agent runs, persist final diff, tool calls, stdout/stderr, final answer, injected context spans, and trace IDs.</li>
         <li><strong>Make trace predicates evaluable.</strong> Connect predicate checks to retrieved memories, injected content, tool arguments, final response, and code diffs.</li>
-        <li><strong>Hindsight pilot spike.</strong> Only after token/API scope and local trace readiness are complete: run local Docker/API, create a bank per scope, retain seed facts, recall from a session prompt, delete/reset, and record provider IDs/latencies.</li>
+        <li><strong>Hindsight pilot spike.</strong> Use <code>npm --prefix packages/coding-agent run memswe:hindsight-smoke</code> only after explicit token/API approval. It creates/resets a smoke bank, seeds task-YAML-derived gamma facts, runs retain/recall/delete against local Hindsight, and records provider-facing request/response traces and failure guidance.</li>
         <li><strong>Real model / MiniMax pilot.</strong> Requires explicit API token approval plus complete local artifact/trace readiness; do not use this smoke path for unapproved provider calls.</li>
         <li><strong>Aggregate reporting.</strong> Add a report builder over <code>.memswe-runs/</code> that produces per-condition/task/model/repetition summaries aligned with MemSWE measurement docs.</li>
       </ol>

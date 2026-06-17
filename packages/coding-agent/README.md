@@ -122,6 +122,10 @@ npm --prefix packages/coding-agent run memswe:smoke -- --all-tasks --continue-on
 
 # Explicit condition.
 npm --prefix packages/coding-agent run memswe:smoke -- --condition=no_memory
+
+# Local Hindsight AMS/API smoke. This may call the configured local Hindsight LLM
+# provider during retain/recall and should only be run after explicit token approval.
+npm --prefix packages/coding-agent run memswe:hindsight-smoke
 ```
 
 Condition support is intentionally narrow:
@@ -130,6 +134,8 @@ Condition support is intentionally narrow:
 - `repository_docs`: scaffolded materialization path that writes `docs/agent-project-memory/memswe-facts.md` into the temp fixture and records the copied memory doc as an artifact. Treat it as harness plumbing, not a completed benchmark-ready local-memory baseline.
 - `full_context` and `hindsight`: accepted as known condition IDs, but fail closed as not implemented in the current runner.
 - Any other `--condition=...` value is invalid and exits before task execution.
+
+`memswe:hindsight-smoke` is separate from `memswe:smoke`: it targets a local Hindsight API, creates/resets a smoke bank, seeds task-YAML-derived gamma facts, performs retain/recall/delete, and writes `hindsight-smoke-result.json`. Because retain/recall can use the configured Hindsight LLM provider, treat this as a real local AMS/API smoke that may incur model/token usage; do not run it without explicit token scope and approval.
 
 Expected behavior with the faux/no-edit runner:
 
@@ -156,6 +162,8 @@ Important files:
 - `agent.patch`, `worktree-diff.patch`, `changed-files.json`: no-op patch artifacts for faux/no-edit runs; real-model pilots must persist real diffs here.
 - `condition-result.json`: selected memory condition and condition-specific artifact paths.
 - `repository-docs/memswe-facts.md`: only present for the `repository_docs` scaffold.
+
+The Hindsight local smoke writes `.memswe-runs/<timestamp>/hindsight-local-smoke/hindsight-smoke-result.json` with request/response trace events, predicate results, and structured failure guidance. It is provider-readiness evidence only, not a MemSWE task score.
 
 All-task runs also write:
 
