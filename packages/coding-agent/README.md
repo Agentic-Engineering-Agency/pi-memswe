@@ -137,6 +137,8 @@ Condition support is intentionally narrow:
 
 `memswe:hindsight-smoke` is separate from `memswe:smoke`: it targets a local Hindsight API, creates/resets a smoke bank, seeds task-YAML-derived gamma facts, performs retain/recall/delete, and writes `hindsight-smoke-result.json`. Because retain/recall can use the configured Hindsight LLM provider, treat this as a real local AMS/API smoke that may incur model/token usage; do not run it without explicit token scope and approval.
 
+`memswe:smoke` defaults to deterministic `--agent-mode=faux-text`. A narrow real-model plumbing check is available as `--agent-mode=minimax-real`, which selects pi provider `minimax` / model `MiniMax-M3`, requires `MINIMAX_API_KEY` in the environment, disables agent tools, and is blocked for `--all-tasks` to avoid accidental multi-task spend. Note the endpoint distinction: the Hindsight/LiteLLM smoke uses the MiniMax token-plan endpoint `https://api.minimax.io/v1`, while pi's built-in MiniMax-M3 entry uses the provider's Anthropic-compatible endpoint `https://api.minimax.io/anthropic`.
+
 Expected behavior with the faux/no-edit runner:
 
 - The default gamma smoke should pass visible/protected verification.
@@ -154,7 +156,7 @@ Each task run writes artifacts under:
 Important files:
 
 - `run-record.json`: MemSWE-shaped run record (`uam-run.v0.1`) after local shape validation.
-- `faux-agent-result.json`: deterministic faux session status, prompt ref, final response, and event/message counts.
+- `agent-result.json`: selected agent mode, provider/model/base URL, session status, prompt ref, final response, and event/message counts.
 - `agent-events.json`, `agent-messages.json`, `agent-final-response.txt`: captured pi session artifacts.
 - `setup-result.json`: task environment setup command result when the task declares one.
 - `verifier-results.json`: harness-side visible/protected verifier command results.

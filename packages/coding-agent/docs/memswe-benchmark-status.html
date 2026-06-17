@@ -266,7 +266,7 @@
           <span class="pill info">Generated 2026-06-17 03:26 UTC</span>
         </div>
         <h1>MemSWE / PAP-membench benchmark status</h1>
-        <p class="subtitle">Consolidated status of the pi-memswe fixed runtime/harness fork: current faux-provider smoke commands, all-task suite loop, condition scaffold, artifacts, and next steps without overclaiming benchmark or real-model readiness.</p>
+        <p class="subtitle">Consolidated status of the pi-memswe fixed runtime/harness fork: current faux-provider smoke commands, guarded MiniMax real-model plumbing checks, all-task suite loop, condition scaffold, artifacts, and next steps without overclaiming benchmark performance.</p>
       </div>
       <aside class="stamp">
         <div>
@@ -312,8 +312,8 @@
             <span><code>pi-memswe</code> is treated as the fixed runtime/harness fork. The benchmark source of truth remains <code>../memswe</code>; memory condition/provider behavior is the evaluated variable.</span>
           </div>
           <div class="event">
-            <strong>Faux-provider smoke runner</strong>
-            <span><code>packages/coding-agent/scripts/memswe-smoke-runner.ts</code> creates temp fixture worktrees, runs deterministic pi <code>createAgentSession(...)</code> sessions with the faux provider, captures agent artifacts, runs harness-side verifiers, validates run-record shape, and emits <code>run-record.json</code>.</span>
+            <strong>Smoke runner</strong>
+            <span><code>packages/coding-agent/scripts/memswe-smoke-runner.ts</code> creates temp fixture worktrees, runs pi <code>createAgentSession(...)</code> sessions, captures agent artifacts, runs harness-side verifiers, validates run-record shape, and emits <code>run-record.json</code>. Default mode remains deterministic <code>--agent-mode=faux-text</code>.</span>
           </div>
           <div class="event">
             <strong>Verifier environment and patch artifacts</strong>
@@ -360,15 +360,18 @@
 
     <section class="card">
       <h2>Latest verified harness results</h2>
-      <p>Representative commands run from <code>pi-memswe</code> use only the faux provider and harness-side verifiers:</p>
+      <p>Representative commands run from <code>pi-memswe</code>. The first two use only the faux provider and harness-side verifiers; the MiniMax command is a separate guarded provider-plumbing smoke:</p>
       <pre>npm --prefix packages/coding-agent run memswe:smoke
 npm --prefix packages/coding-agent run memswe:smoke -- --all-tasks --continue-on-task-failure
-npm --prefix packages/coding-agent run memswe:smoke -- --condition=repository_docs</pre>
+npm --prefix packages/coding-agent run memswe:smoke -- --task-id=repo-gamma-invoice-export-001 --condition=no_memory --agent-mode=minimax-real
+cd packages/coding-agent &amp;&amp; node ../../node_modules/vitest/dist/cli.js --run test/suite/memswe-smoke-runner.test.ts
+npm run check</pre>
       <div class="grid two" style="margin-top: 18px;">
         <div class="card compact">
           <h3>Smoke runner behavior</h3>
           <ul>
             <li><strong>Default gamma:</strong> passes visible/protected verification with faux/no-edit agent behavior.</li>
+            <li><strong>MiniMax real-model mode:</strong> available only with explicit <code>--agent-mode=minimax-real</code>; selects pi provider <code>minimax</code> / model <code>MiniMax-M3</code>, requires an environment API key, disables agent tools, and is blocked for <code>--all-tasks</code> to avoid accidental multi-task spend.</li>
             <li><strong>All-task suite:</strong> six task descriptors discovered; latest summary recorded five expected verifier failures and one gamma pass.</li>
             <li><strong>Hidden verifier policy:</strong> hidden verifiers remain isolated and skipped by default unless explicitly enabled by harness policy.</li>
             <li><strong>Condition scaffold:</strong> <code>no_memory</code> default writes <code>condition-result.json</code>; <code>repository_docs</code> additionally writes a copied project-memory doc artifact.</li>
@@ -411,7 +414,7 @@ pi-memswe/.memswe-runs/&lt;timestamp&gt;/&lt;task-id&gt;/changed-files.json</pre
         <h2>Harness status</h2>
         <ul>
           <li><strong>Runtime path:</strong> pi coding-agent SDK via <code>createAgentSession(...)</code>.</li>
-          <li><strong>Current agent model:</strong> deterministic faux provider, no paid/real model calls.</li>
+          <li><strong>Default agent model:</strong> deterministic faux provider, no paid/real model calls unless <code>--agent-mode=minimax-real</code> is explicitly selected.</li>
           <li><strong>Current tools:</strong> no agent tools in smoke mode; verifiers run harness-side.</li>
           <li><strong>Fixture isolation:</strong> each task fixture is copied into a temporary worktree with an initialized git baseline.</li>
           <li><strong>Verifier isolation:</strong> visible/protected verifier files are copied into the temp worktree; hidden verifier metadata is skipped unless explicitly included.</li>

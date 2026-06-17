@@ -32,9 +32,11 @@ const REPO_ROOT = resolve(SCRIPT_DIR, "../../..");
 const MEMSWE_ROOT = resolve(REPO_ROOT, "../memswe");
 const RUNS_ROOT = join(REPO_ROOT, ".memswe-runs");
 const MEMORY_CONDITION_IDS = ["no_memory", "full_context", "repository_docs", "hindsight"] as const;
+const AGENT_MODE_IDS = ["faux-text", "minimax-real"] as const;
 
 type VerifierKind = "visible" | "hidden" | "protected";
 type MemoryConditionId = (typeof MEMORY_CONDITION_IDS)[number];
+type AgentMode = (typeof AGENT_MODE_IDS)[number];
 
 type TaskYaml = {
 	schema_version?: string;
@@ -95,7 +97,7 @@ type CommandResult = VerifierCommand & {
 	duration_ms: number;
 };
 
-type FauxAgentResult = {
+type AgentRunResult = {
 	session_id: string;
 	prompt_ref: string;
 	final_response: string;
@@ -103,6 +105,10 @@ type FauxAgentResult = {
 	message_count: number;
 	status: "completed" | "errored";
 	error: string | null;
+	agent_mode: AgentMode;
+	model_id: string;
+	provider_id: string;
+	base_url: string;
 };
 
 type RunRecord = {
@@ -188,6 +194,12 @@ function parseConditionId(value: string | undefined): MemoryConditionId {
 	throw new Error(`Invalid --condition=${conditionId}; expected one of ${MEMORY_CONDITION_IDS.join(", ")}`);
 }
 
+function parseAgentMode(value: string | undefined): AgentMode {
+	const agentMode = value ?? "faux-text";
+	if (AGENT_MODE_IDS.includes(agentMode as AgentMode)) return agentMode as AgentMode;
+	throw new Error(`Invalid --agent-mode=${agentMode}; expected one of ${AGENT_MODE_IDS.join(", ")}`);
+}
+
 function isTaskYaml(value: unknown): value is TaskYaml {
 	return typeof value === "object" && value !== null;
 }
@@ -264,7 +276,7 @@ Do not call tools. Do not edit files. Acknowledge the task prompt and stop.`,
 	};
 }
 
-async function runFauxAgentSession(task: TaskYaml, taskDir: string, workdir: string, artifactsDir: string): Promise<FauxAgentResult> {
+async function runFauxAgentSession(task: TaskYaml, taskDir: string, workdir: string, artifactsDir: string): Promise<AgentRunResult> {
 	const gradedSession = resolveGradedSession(task);
 	const prompt = await readFile(join(taskDir, gradedSession.prompt_ref!), "utf8");
 	const fauxProvider = registerFauxProvider();
@@ -310,7 +322,7 @@ async function runFauxAgentSession(task: TaskYaml, taskDir: string, workdir: str
 		settingsManager,
 	});
 
-	let status: FauxAgentResult["status"] = "completed";
+	let status: AgentRunResult["status"] = "completed";
 	let error: string | null = null;
 	try {
 		session.subscribe((event) => {
@@ -338,7 +350,79 @@ async function runFauxAgentSession(task: TaskYaml, taskDir: string, workdir: str
 		message_count: session.messages.length,
 		status,
 		error,
+		agent_mode: "faux-text",
+		model_id: model.id,
+		provider_id: model.provider,
+		base_url: model.baseUrl,
 	};
+}
+
+async function runMinimaxAgentSession(task: TaskYaml, taskDir: string, workdir: string, artifactsDir: string): Promise<AgentRunResult> {
+	const gradedSession = resolveGradedSession(task);
+	const prompt = await readFile(join(taskDir, gradedSession.prompt_ref!), "utf8");
+	const apiKey = process.env.MINIMAX_API_KEY ?? process.env.HINDSIGHT_API_LLM_API_KEY;
+	if (!apiKey) {
+		throw new Error("--agent-mode=minimax-real requires MINIMAX_API_KEY in the environment; HINDSIGHT_API_LLM_API_KEY is accepted for local smoke reuse.");
+	}
+
+	const authStorage = AuthStorage.inMemory();
+	authStorage.setRuntimeApiKey("minimax", apiKey);
+	const modelRegistry = ModelRegistry.inMemory(authStorage);
+	const model = modelRegistry.find("minimax", "MiniMax-M3");
+	if (!model) throw new Error("MiniMax-M3 model is not registered for provider minimax");
+
+	const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false } });
+	const events: AgentSessionEvent[] = [];
+	const { session } = await createAgentSession({
+		cwd: workdir,
+		agentDir: join(artifactsDir, "agent-dir"),
+		model,
+		thinkingLevel: "off",
+		authStorage,
+		modelRegistry,
+		resourceLoader: createMemSwerResourceLoader(),
+		tools: [],
+		sessionManager: SessionManager.inMemory(workdir),
+		settingsManager,
+	});
+
+	let status: AgentRunResult["status"] = "completed";
+	let error: string | null = null;
+	try {
+		session.subscribe((event) => {
+			events.push(event);
+		});
+		await session.prompt(prompt);
+	} catch (caught) {
+		status = "errored";
+		error = caught instanceof Error ? caught.message : String(caught);
+	} finally {
+		await writeFile(join(artifactsDir, "agent-events.json"), `${JSON.stringify(toJsonSafe(events), null, "	")}\n`);
+		await writeFile(join(artifactsDir, "agent-messages.json"), `${JSON.stringify(toJsonSafe(session.messages), null, "	")}\n`);
+		session.dispose();
+	}
+
+	const assistantMessages = session.messages.filter((message) => message.role === "assistant");
+	const finalResponse = messageText(assistantMessages.at(-1));
+	await writeFile(join(artifactsDir, "agent-final-response.txt"), `${finalResponse}\n`);
+	return {
+		session_id: gradedSession.session_id!,
+		prompt_ref: gradedSession.prompt_ref!,
+		final_response: finalResponse,
+		event_count: events.length,
+		message_count: session.messages.length,
+		status,
+		error,
+		agent_mode: "minimax-real",
+		model_id: model.id,
+		provider_id: model.provider,
+		base_url: model.baseUrl,
+	};
+}
+
+async function runAgentSession(agentMode: AgentMode, task: TaskYaml, taskDir: string, workdir: string, artifactsDir: string): Promise<AgentRunResult> {
+	if (agentMode === "minimax-real") return runMinimaxAgentSession(task, taskDir, workdir, artifactsDir);
+	return runFauxAgentSession(task, taskDir, workdir, artifactsDir);
 }
 
 function verifierCommands(task: TaskYaml, includeHidden: boolean): VerifierCommand[] {
@@ -474,6 +558,7 @@ async function runTask(
 	includeHidden: boolean,
 	skipFauxAgent: boolean,
 	conditionId: MemoryConditionId,
+	agentMode: AgentMode,
 ): Promise<TaskRunResult> {
 	const taskDir = join(MEMSWE_ROOT, "tasks", taskId);
 	const taskYamlPath = join(taskDir, "task.yaml");
@@ -491,10 +576,10 @@ async function runTask(
 	const conditionResult = await prepareCondition(conditionId, parsed, workdir, artifactsDir);
 	await initializeWorktreeBaseline(workdir);
 
-	const fauxAgentResult = skipFauxAgent ? undefined : await runFauxAgentSession(parsed, taskDir, workdir, artifactsDir);
-	if (fauxAgentResult) {
+	const agentResult = skipFauxAgent ? undefined : await runAgentSession(agentMode, parsed, taskDir, workdir, artifactsDir);
+	if (agentResult) {
 		console.log(
-			`Faux agent session ${fauxAgentResult.session_id} finished with ${fauxAgentResult.status}; captured ${fauxAgentResult.event_count} event(s).`,
+			`${agentResult.agent_mode} agent session ${agentResult.session_id} finished with ${agentResult.status}; captured ${agentResult.event_count} event(s).`,
 		);
 	}
 	const patchArtifacts = await writePatchArtifacts(workdir, artifactsDir);
@@ -533,7 +618,7 @@ async function runTask(
 	const p2pTotal = protectedResults.length;
 	const p2pPassed = passed(protectedResults);
 	const verifiersPassed = results.length > 0 && passed(results) === results.length;
-	const agentPassed = fauxAgentResult?.status !== "errored";
+	const agentPassed = agentResult?.status !== "errored";
 	const allPassed = verifiersPassed && agentPassed;
 	const record: RunRecord = {
 		run_id: runId,
@@ -543,17 +628,18 @@ async function runTask(
 			condition_id: conditionResult.condition_id,
 			memory_system: conditionResult.memory_system,
 			baseline_kind: "verifier_only_smoke",
-			model_id: "none/verifier-only",
+			model_id: agentResult ? `${agentResult.provider_id}/${agentResult.model_id}` : "none/verifier-only",
 			repetition_index: 1,
 			k: 1,
 		},
 		session_results: [
 			{
-				session_id: fauxAgentResult?.session_id ?? "s3",
+				session_id: agentResult?.session_id ?? "s3",
 				status: allPassed ? "completed" : "errored",
 				trace_id: null,
 				artifact_paths: {
 					workdir,
+					agent_result: join(artifactsDir, "agent-result.json"),
 					agent_events: join(artifactsDir, "agent-events.json"),
 					agent_messages: join(artifactsDir, "agent-messages.json"),
 					agent_final_response: join(artifactsDir, "agent-final-response.txt"),
@@ -619,7 +705,7 @@ async function runTask(
 	};
 	validateRunRecordShape(record);
 
-	await writeFile(join(artifactsDir, "faux-agent-result.json"), `${JSON.stringify(fauxAgentResult ?? null, null, "	")}\n`);
+	await writeFile(join(artifactsDir, "agent-result.json"), `${JSON.stringify(agentResult ?? null, null, "	")}\n`);
 	await writeFile(join(artifactsDir, "verifier-results.json"), `${JSON.stringify(results, null, "	")}\n`);
 	await writeFile(
 		join(artifactsDir, "skipped-hidden-verifiers.json"),
@@ -635,11 +721,15 @@ async function main(): Promise<void> {
 	const includeHidden = hasFlag("--include-hidden");
 	const skipFauxAgent = hasFlag("--skip-faux-agent");
 	const conditionId = parseConditionId(getArgumentValue("--condition"));
+	const agentMode = parseAgentMode(getArgumentValue("--agent-mode"));
 	const timestamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
 	if (!hasFlag("--all-tasks")) {
-		const result = await runTask(getArgumentValue("--task-id") ?? DEFAULT_TASK_ID, timestamp, includeHidden, skipFauxAgent, conditionId);
+		const result = await runTask(getArgumentValue("--task-id") ?? DEFAULT_TASK_ID, timestamp, includeHidden, skipFauxAgent, conditionId, agentMode);
 		if (!result.allPassed) process.exitCode = 1;
 		return;
+	}
+	if (agentMode !== "faux-text") {
+		throw new Error("--all-tasks is only allowed with --agent-mode=faux-text to avoid accidental multi-task real-model spend");
 	}
 
 	const continueOnTaskFailure = hasFlag("--continue-on-task-failure");
@@ -649,7 +739,7 @@ async function main(): Promise<void> {
 	let hasFailure = false;
 	for (const taskId of await discoverTaskIds(MEMSWE_ROOT)) {
 		try {
-			const result = await runTask(taskId, timestamp, includeHidden, skipFauxAgent, conditionId);
+			const result = await runTask(taskId, timestamp, includeHidden, skipFauxAgent, conditionId, agentMode);
 			const status = result.allPassed ? "passed" : "failed";
 			hasFailure = hasFailure || !result.allPassed;
 			taskResults.push({
