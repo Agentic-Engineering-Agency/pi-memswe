@@ -42,6 +42,7 @@ I regularly publish my own `pi-mono` work sessions here:
 ## Table of Contents
 
 - [Quick Start](#quick-start)
+- [MemSWE / PAP-membench Harness](#memswe--pap-membench-harness)
 - [Providers & Models](#providers--models)
 - [Interactive Mode](#interactive-mode)
   - [Editor](#editor)
@@ -96,6 +97,89 @@ pi
 Then just talk to pi. By default, pi gives the model four tools: `read`, `write`, `edit`, and `bash`. The model uses these to fulfill your requests. Add capabilities via [skills](#skills), [prompt templates](#prompt-templates), [extensions](#extensions), or [pi packages](#pi-packages).
 
 **Platform notes:** [Windows](docs/windows.md) | [Termux (Android)](docs/termux.md) | [tmux](docs/tmux.md) | [Terminal setup](docs/terminal-setup.md) | [Shell aliases](docs/shell-aliases.md)
+
+---
+
+## MemSWE / PAP-membench Harness
+
+This fork is the fixed pi runtime/harness for MemSWE experiments. The benchmark source of truth is the sibling `../memswe` repository: task descriptors, fixtures, session prompts, fact lifecycle, verifier policy, trace predicates, and run-record schema belong there. This package supplies the current runner around pi's coding-agent SDK and must keep the runtime fixed while memory conditions/providers vary.
+
+The current smoke runner uses the faux provider, disables agent tools, and does not call real model/provider APIs. It is meant to audit harness plumbing, verifier isolation, artifact emission, and condition setup before real-model pilots.
+
+### Commands
+
+Run from the `pi-memswe` repo root:
+
+```bash
+# Default gamma smoke: repo-gamma-invoice-export-001, condition no_memory.
+npm --prefix packages/coding-agent run memswe:smoke
+
+# Explicit task.
+npm --prefix packages/coding-agent run memswe:smoke -- --task-id=repo-gamma-invoice-export-001
+
+# Discover and run all MemSWE task descriptors, continuing after expected task failures.
+npm --prefix packages/coding-agent run memswe:smoke -- --all-tasks --continue-on-task-failure
+
+# Explicit condition.
+npm --prefix packages/coding-agent run memswe:smoke -- --condition=no_memory
+```
+
+Condition support is intentionally narrow:
+
+- `no_memory`: implemented default baseline for the faux/no-edit smoke runner.
+- `repository_docs`: scaffolded materialization path that writes `docs/agent-project-memory/memswe-facts.md` into the temp fixture and records the copied memory doc as an artifact. Treat it as harness plumbing, not a completed benchmark-ready local-memory baseline.
+- `full_context` and `hindsight`: accepted as known condition IDs, but fail closed as not implemented in the current runner.
+- Any other `--condition=...` value is invalid and exits before task execution.
+
+Expected behavior with the faux/no-edit runner:
+
+- The default gamma smoke should pass visible/protected verification.
+- In `--all-tasks --continue-on-task-failure`, non-gamma tasks may fail verification explicitly because the faux agent acknowledges prompts and does not edit files. Those failures are expected evidence that verifiers are active, not evidence of real-model quality.
+- Hidden verifiers remain isolated and are skipped unless an explicit hidden-run policy is used. Do not expose hidden/protected verifier internals to the agent runtime.
+
+### Artifacts
+
+Each task run writes artifacts under:
+
+```text
+.memswe-runs/<timestamp>/<task-id>/
+```
+
+Important files:
+
+- `run-record.json`: MemSWE-shaped run record (`uam-run.v0.1`) after local shape validation.
+- `faux-agent-result.json`: deterministic faux session status, prompt ref, final response, and event/message counts.
+- `agent-events.json`, `agent-messages.json`, `agent-final-response.txt`: captured pi session artifacts.
+- `setup-result.json`: task environment setup command result when the task declares one.
+- `verifier-results.json`: harness-side visible/protected verifier command results.
+- `skipped-hidden-verifiers.json`: hidden verifier metadata skipped by default.
+- `agent.patch`, `worktree-diff.patch`, `changed-files.json`: no-op patch artifacts for faux/no-edit runs; real-model pilots must persist real diffs here.
+- `condition-result.json`: selected memory condition and condition-specific artifact paths.
+- `repository-docs/memswe-facts.md`: only present for the `repository_docs` scaffold.
+
+All-task runs also write:
+
+```text
+.memswe-runs/<timestamp>/suite-summary.json
+```
+
+The suite summary lists task IDs, pass/fail status, run-record path, failed phase, and harness error text when available.
+
+### Validation
+
+Use these checks after harness edits or docs updates that change command references:
+
+```bash
+# Targeted runner/helper tests, from packages/coding-agent.
+cd packages/coding-agent
+node ../../node_modules/vitest/dist/cli.js --run test/suite/memswe-smoke-runner.test.ts
+
+# Full repo lint/format/type/check gate, from pi-memswe root.
+cd ../..
+npm run check
+```
+
+Do not run real model/provider pilots from this smoke path unless API-token scope, local trace readiness, and hidden/protected policy are explicitly approved.
 
 ---
 

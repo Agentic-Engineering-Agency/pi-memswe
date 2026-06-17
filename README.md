@@ -20,6 +20,21 @@
 
 This is the home of the pi agent harness project including our self extensible coding agent.
 
+## MemSWE / PAP-membench harness fork
+
+This checkout is the fixed pi runtime and harness fork for PAP-membench MemSWE work. The evaluated variable is the memory condition/provider, not the pi runtime itself. Benchmark identity remains in the sibling benchmark repo at `../memswe`: task descriptors, fixtures, sessions, facts, verifier policy, trace predicates, and run-record schema are source of truth there.
+
+Current harness entrypoints live in `packages/coding-agent`:
+
+```bash
+npm --prefix packages/coding-agent run memswe:smoke
+npm --prefix packages/coding-agent run memswe:smoke -- --task-id=repo-gamma-invoice-export-001
+npm --prefix packages/coding-agent run memswe:smoke -- --all-tasks --continue-on-task-failure
+npm --prefix packages/coding-agent run memswe:smoke -- --condition=no_memory
+```
+
+The smoke runner uses the deterministic faux provider and does not call real model/provider APIs. It copies MemSWE fixtures into temporary worktrees, keeps hidden/protected verifier assets harness-side, emits artifacts under `.memswe-runs/<timestamp>/<task-id>/`, and writes `suite-summary.json` for all-task runs. See [packages/coding-agent/README.md](packages/coding-agent/README.md#memswe--pap-membench-harness) and [packages/coding-agent/docs/memswe-benchmark-status.html](packages/coding-agent/docs/memswe-benchmark-status.html) for current command, artifact, and readiness details.
+
 * **[@earendil-works/pi-coding-agent](packages/coding-agent)**: Interactive coding agent CLI
 * **[@earendil-works/pi-agent-core](packages/agent)**: Agent runtime with tool calling and state management
 * **[@earendil-works/pi-ai](packages/ai)**: Unified multi-provider LLM API (OpenAI, Anthropic, Google, …)

@@ -260,41 +260,41 @@
     <header>
       <div class="hero">
         <div class="pill-row">
-          <span class="pill good">Current smoke: passing</span>
-          <span class="pill good">Repo check: passing</span>
-          <span class="pill warn">Harness has 1 uncommitted change</span>
-          <span class="pill info">Generated 2026-06-16 21:12 UTC</span>
+          <span class="pill good">Default gamma smoke: passing</span>
+          <span class="pill good">All-task loop: scaffolded</span>
+          <span class="pill warn">Working tree not committed</span>
+          <span class="pill info">Generated 2026-06-17 03:26 UTC</span>
         </div>
         <h1>MemSWE / PAP-membench benchmark status</h1>
-        <p class="subtitle">Consolidated status of the benchmark specification, pi-based harness, MemoryBench adaptation work, test results, current artifacts, and next implementation steps.</p>
+        <p class="subtitle">Consolidated status of the pi-memswe fixed runtime/harness fork: current faux-provider smoke commands, all-task suite loop, condition scaffold, artifacts, and next steps without overclaiming benchmark or real-model readiness.</p>
       </div>
       <aside class="stamp">
         <div>
-          <strong>Current pushed harness commit</strong>
-          <pre>dbc8e1b9 feat(coding-agent): add memswe smoke harness</pre>
+          <strong>Current local harness commit</strong>
+          <pre>4854e7a9 feat(coding-agent): scaffold memswe memory conditions</pre>
         </div>
         <div>
-          <p>Remote verified after push:</p>
-          <code>origin/main = dbc8e1b9b586cb144ba463bc99eb6aa9f37d06d7</code>
+          <p>Branch state before this docs pass:</p>
+          <code>main...origin/main with one pre-existing script modification</code>
         </div>
       </aside>
     </header>
 
     <section class="grid four" aria-label="headline metrics">
       <div class="metric">
-        <div class="label">Latest smoke run</div>
+        <div class="label">Default smoke run</div>
         <div class="value status-good">PASS</div>
-        <div class="detail">Faux agent + visible/protected verifiers</div>
+        <div class="detail">Gamma task, faux agent, no_memory</div>
       </div>
       <div class="metric">
-        <div class="label">Visible tests</div>
-        <div class="value">2 / 2</div>
-        <div class="detail">invoice export visible smoke</div>
+        <div class="label">All-task loop</div>
+        <div class="value">6 tasks</div>
+        <div class="detail">Continues and writes suite summary</div>
       </div>
       <div class="metric">
-        <div class="label">Protected tests</div>
-        <div class="value">2 / 2</div>
-        <div class="detail">route + function contract</div>
+        <div class="label">Conditions</div>
+        <div class="value">2 scaffolded</div>
+        <div class="detail"><code>no_memory</code> verified; <code>repository_docs</code> materializes docs</div>
       </div>
       <div class="metric">
         <div class="label">Repo check</div>
@@ -308,24 +308,24 @@
         <h2>What has been completed</h2>
         <div class="timeline">
           <div class="event">
-            <strong>Repository reconciliation</strong>
-            <span><code>pi-memswe</code> was reconciled with the org fork and upstream. Local main, origin/main, and upstream/main were aligned before harness work was committed.</span>
-          </div>
-          <div class="event">
-            <strong>Harness guidance</strong>
-            <span><code>AGENTS.md</code> now contains MemSWE harness rules: fixed-runtime invariant, benchmark source-of-truth boundaries, faux-provider-first scaffolding, no hidden/protected leakage, deterministic-first scoring, and artifact discipline.</span>
-          </div>
-          <div class="event">
-            <strong>MemoryBench adaptation design</strong>
-            <span><code>packages/coding-agent/docs/memswe-memorybench-adaptation.md</code> maps MemoryBench concepts into MemSWE phases, checkpoints, normalized retrieved-memory items, memory-condition adapters, and reporting.</span>
+            <strong>Fixed-runtime harness role documented</strong>
+            <span><code>pi-memswe</code> is treated as the fixed runtime/harness fork. The benchmark source of truth remains <code>../memswe</code>; memory condition/provider behavior is the evaluated variable.</span>
           </div>
           <div class="event">
             <strong>Faux-provider smoke runner</strong>
-            <span><code>packages/coding-agent/scripts/memswe-smoke-runner.ts</code> creates a temp fixture worktree, runs a deterministic pi <code>createAgentSession(...)</code> with faux provider, captures agent artifacts, runs verifiers, and emits a <code>run-record.json</code>.</span>
+            <span><code>packages/coding-agent/scripts/memswe-smoke-runner.ts</code> creates temp fixture worktrees, runs deterministic pi <code>createAgentSession(...)</code> sessions with the faux provider, captures agent artifacts, runs harness-side verifiers, validates run-record shape, and emits <code>run-record.json</code>.</span>
           </div>
           <div class="event">
-            <strong>SOUL.md</strong>
-            <span>PAP/MemSWE operating principles were added to <code>pi-memswe/SOUL.md</code>, root Hermes <code>~/.hermes/SOUL.md</code>, and the active <code>membench</code> profile soul.</span>
+            <strong>Verifier environment and patch artifacts</strong>
+            <span>The runner initializes a git baseline, captures <code>agent.patch</code>, <code>worktree-diff.patch</code>, and <code>changed-files.json</code>, creates a Python venv, runs task setup commands, and keeps hidden/protected assets out of agent-visible context.</span>
+          </div>
+          <div class="event">
+            <strong>All-task suite loop</strong>
+            <span><code>--all-tasks --continue-on-task-failure</code> discovers six MemSWE task descriptors, records pass/fail per task, and writes <code>.memswe-runs/&lt;timestamp&gt;/suite-summary.json</code>. Faux/no-edit failures on non-gamma tasks are expected verifier evidence.</span>
+          </div>
+          <div class="event">
+            <strong>Condition scaffold</strong>
+            <span><code>--condition=no_memory</code> is the verified default. <code>repository_docs</code> currently materializes remembered facts into project docs and records a condition artifact, but remains harness plumbing rather than a completed benchmark baseline. <code>full_context</code> and <code>hindsight</code> fail closed as not implemented.</span>
           </div>
         </div>
       </article>
@@ -337,72 +337,74 @@
           <tbody>
             <tr>
               <td><code>pi-memswe</code></td>
-              <td><span class="status-warn">1 modified file</span></td>
-              <td>Current branch tracks <code>origin/main</code>. Latest pushed commit is <code>dbc8e1b9</code>. Local change improves verifier setup by creating a venv and running task <code>setup_command</code>.</td>
+              <td><span class="status-warn">modified</span></td>
+              <td>Current branch tracks <code>origin/main</code>. Latest local commit is <code>4854e7a9</code>. Before this docs pass, one script file was already modified; this status page and READMEs are additional uncommitted docs changes.</td>
             </tr>
             <tr>
               <td><code>memswe</code></td>
-              <td><span class="status-good">clean</span></td>
-              <td>Benchmark/spec repo clean on <code>main...origin/main</code>.</td>
+              <td><span class="status-warn">read-only dependency</span></td>
+              <td>Benchmark/spec repo at <code>../memswe</code> remains source of truth for tasks, fixtures, sessions, facts, verifier metadata, and run-record schema.</td>
             </tr>
             <tr>
               <td><code>memorybench-memswe</code></td>
-              <td><span class="status-good">clean</span></td>
-              <td>Reference repo clean on <code>main...origin/main</code>.</td>
+              <td><span class="status-warn">reference only</span></td>
+              <td>Reference patterns may inform provider isolation and reports, but this harness is not coupled to MemoryBench.</td>
             </tr>
           </tbody>
         </table>
         <div class="note" style="margin-top: 16px;">
-          <strong>Open local harness change:</strong> <code>packages/coding-agent/scripts/memswe-smoke-runner.ts</code> now prepares a Python virtualenv, runs <code>pip install -r requirements.txt</code>, records <code>setup-result.json</code>, and executes verifiers through that venv. It passed smoke and <code>npm run check</code>, but is not yet committed.
+          <strong>Scope note:</strong> this page describes current local harness status. It does not claim benchmark-spec ownership, real-model performance, Hindsight readiness, or a completed <code>repository_docs</code> baseline.
         </div>
       </article>
     </section>
 
     <section class="card">
-      <h2>Latest verified test results</h2>
-      <p>Command run from <code>pi-memswe</code>:</p>
-      <pre>npm --prefix packages/coding-agent run memswe:smoke && npm run check</pre>
+      <h2>Latest verified harness results</h2>
+      <p>Representative commands run from <code>pi-memswe</code> use only the faux provider and harness-side verifiers:</p>
+      <pre>npm --prefix packages/coding-agent run memswe:smoke
+npm --prefix packages/coding-agent run memswe:smoke -- --all-tasks --continue-on-task-failure
+npm --prefix packages/coding-agent run memswe:smoke -- --condition=repository_docs</pre>
       <div class="grid two" style="margin-top: 18px;">
         <div class="card compact">
-          <h3>Smoke runner output</h3>
+          <h3>Smoke runner behavior</h3>
           <ul>
-            <li><strong>Setup command:</strong> <code>pip install -r requirements.txt</code>, exit 0.</li>
-            <li><strong>Faux agent:</strong> session <code>s3</code> completed; 15 events captured.</li>
-            <li><strong>Hidden verifier:</strong> 1 hidden verifier isolated and skipped unless <code>--include-hidden</code> is passed.</li>
-            <li><strong>Visible verifier:</strong> <code>visible-smoke-export</code>, exit 0, 2 tests passed.</li>
-            <li><strong>Protected verifier:</strong> <code>protected-route-contract</code>, exit 0, 1 test passed.</li>
-            <li><strong>Protected verifier:</strong> <code>protected-export-function-contract</code>, exit 0, 1 test passed.</li>
+            <li><strong>Default gamma:</strong> passes visible/protected verification with faux/no-edit agent behavior.</li>
+            <li><strong>All-task suite:</strong> six task descriptors discovered; latest summary recorded five expected verifier failures and one gamma pass.</li>
+            <li><strong>Hidden verifier policy:</strong> hidden verifiers remain isolated and skipped by default unless explicitly enabled by harness policy.</li>
+            <li><strong>Condition scaffold:</strong> <code>no_memory</code> default writes <code>condition-result.json</code>; <code>repository_docs</code> additionally writes a copied project-memory doc artifact.</li>
+            <li><strong>Run records:</strong> runner performs local shape validation before writing <code>run-record.json</code>.</li>
           </ul>
         </div>
         <div class="card compact">
-          <h3>Repo checks</h3>
+          <h3>Validation commands</h3>
           <ul>
-            <li><code>biome check --write --error-on-warnings .</code>: 654 files checked, no fixes applied.</li>
-            <li><code>check:pinned-deps</code>: passed.</li>
-            <li><code>check:ts-imports</code>: passed.</li>
-            <li><code>check:shrinkwrap</code>: <code>packages/coding-agent/npm-shrinkwrap.json</code> up to date.</li>
-            <li><code>tsgo --noEmit</code>: passed.</li>
-            <li><code>check:browser-smoke</code>: passed.</li>
+            <li><code>cd packages/coding-agent &amp;&amp; node ../../node_modules/vitest/dist/cli.js --run test/suite/memswe-smoke-runner.test.ts</code></li>
+            <li><code>npm run check</code> from repo root.</li>
+            <li>All-task smoke is expected to exit nonzero when non-gamma faux/no-edit tasks fail verification; use <code>--continue-on-task-failure</code> to collect <code>suite-summary.json</code>.</li>
           </ul>
         </div>
       </div>
-      <h3 style="margin-top: 22px;">Latest artifact paths</h3>
-      <pre>pi-memswe/.memswe-runs/2026-06-16T21-12-46-602Z/repo-gamma-invoice-export-001/run-record.json
-pi-memswe/.memswe-runs/2026-06-16T21-12-46-602Z/repo-gamma-invoice-export-001/setup-result.json
-pi-memswe/.memswe-runs/2026-06-16T21-12-46-602Z/repo-gamma-invoice-export-001/faux-agent-result.json
-pi-memswe/.memswe-runs/2026-06-16T21-12-46-602Z/repo-gamma-invoice-export-001/verifier-results.json</pre>
+      <h3 style="margin-top: 22px;">Representative artifact paths</h3>
+      <pre>pi-memswe/.memswe-runs/2026-06-16T22-04-26-416Z/suite-summary.json
+pi-memswe/.memswe-runs/2026-06-17T03-26-40-597Z/repo-gamma-invoice-export-001/run-record.json
+pi-memswe/.memswe-runs/2026-06-16T23-29-10-817Z/repo-gamma-invoice-export-001/run-record.json
+pi-memswe/.memswe-runs/2026-06-16T23-29-10-817Z/repo-gamma-invoice-export-001/condition-result.json
+pi-memswe/.memswe-runs/2026-06-16T23-29-10-817Z/repo-gamma-invoice-export-001/repository-docs/memswe-facts.md
+pi-memswe/.memswe-runs/&lt;timestamp&gt;/&lt;task-id&gt;/agent.patch
+pi-memswe/.memswe-runs/&lt;timestamp&gt;/&lt;task-id&gt;/worktree-diff.patch
+pi-memswe/.memswe-runs/&lt;timestamp&gt;/&lt;task-id&gt;/changed-files.json</pre>
     </section>
 
     <section class="grid two">
       <article class="card">
         <h2>Benchmark status</h2>
         <ul>
-          <li><strong>Task schema exists:</strong> MemSWE task descriptors use <code>uam-task.v0.1</code>.</li>
-          <li><strong>Run-record schema exists:</strong> emitted records use <code>uam-run.v0.1</code>.</li>
-          <li><strong>Phase 0 task inventory exists:</strong> five task designs cover convention retention, resumed bug investigation, requirement update, correction forgetting, and policy-scope memory.</li>
-          <li><strong>Worked smoke target:</strong> <code>repo-gamma-invoice-export-001</code> is runnable through the current smoke harness.</li>
-          <li><strong>Verifiers are deterministic-first:</strong> visible/protected tests run separately from the agent-visible fixture; hidden verifier is isolated.</li>
-          <li><strong>Trace predicates exist:</strong> current smoke marks them <code>not_evaluable</code> because the faux-agent run does not yet generate real memory/tool-use traces.</li>
+          <li><strong>Task schema exists:</strong> MemSWE task descriptors use <code>uam-task.v0.1</code> in <code>../memswe</code>.</li>
+          <li><strong>Run-record schema exists:</strong> harness-emitted records target <code>uam-run.v0.1</code>; the runner currently performs local shape validation.</li>
+          <li><strong>Phase 0 task inventory exists:</strong> six task descriptors are discoverable by the harness.</li>
+          <li><strong>Worked smoke target:</strong> <code>repo-gamma-invoice-export-001</code> is runnable and passing through the current faux/no-edit smoke harness.</li>
+          <li><strong>Verifiers are deterministic-first:</strong> visible/protected tests run separately from the agent-visible fixture; hidden verifiers are isolated and skipped by default.</li>
+          <li><strong>Trace predicates exist:</strong> current faux-agent runs mark them <code>not_evaluable</code> because no real memory/tool-use traces are generated yet.</li>
         </ul>
       </article>
       <article class="card">
@@ -411,10 +413,11 @@ pi-memswe/.memswe-runs/2026-06-16T21-12-46-602Z/repo-gamma-invoice-export-001/ve
           <li><strong>Runtime path:</strong> pi coding-agent SDK via <code>createAgentSession(...)</code>.</li>
           <li><strong>Current agent model:</strong> deterministic faux provider, no paid/real model calls.</li>
           <li><strong>Current tools:</strong> no agent tools in smoke mode; verifiers run harness-side.</li>
-          <li><strong>Fixture isolation:</strong> task fixture copied into temp worktree.</li>
-          <li><strong>Verifier isolation:</strong> visible/protected verifier files copied into temp worktree; hidden verifier skipped by default.</li>
-          <li><strong>Python setup:</strong> local uncommitted runner change now creates a venv and runs task setup command before verifier execution.</li>
-          <li><strong>Artifact emission:</strong> agent events, messages, final response, verifier results, skipped hidden list, setup result, and run record.</li>
+          <li><strong>Fixture isolation:</strong> each task fixture is copied into a temporary worktree with an initialized git baseline.</li>
+          <li><strong>Verifier isolation:</strong> visible/protected verifier files are copied into the temp worktree; hidden verifier metadata is skipped unless explicitly included.</li>
+          <li><strong>All-task execution:</strong> <code>--all-tasks --continue-on-task-failure</code> iterates all six descriptors and emits <code>suite-summary.json</code>.</li>
+          <li><strong>Condition handling:</strong> <code>no_memory</code> is implemented as the default; <code>repository_docs</code> writes project-memory docs as a scaffold; <code>full_context</code> and <code>hindsight</code> are known but not implemented.</li>
+          <li><strong>Artifact emission:</strong> agent events/messages/final response, setup result, patch artifacts, condition result, verifier results, skipped hidden list, and run record.</li>
         </ul>
       </article>
     </section>
@@ -426,27 +429,27 @@ pi-memswe/.memswe-runs/2026-06-16T21-12-46-602Z/repo-gamma-invoice-export-001/ve
         <tbody>
           <tr>
             <td><code>no_memory</code></td>
-            <td><span class="status-good">ready baseline</span></td>
-            <td>Agent sees current session prompt and repo state only.</td>
-            <td>Needs full multi-session orchestration beyond the current single graded-session smoke.</td>
-          </tr>
-          <tr>
-            <td><code>full_context</code></td>
-            <td><span class="status-good">ready conceptually</span></td>
-            <td>Defined in task design as transcript replay ceiling baseline.</td>
-            <td>Implement transcript assembly/injection in harness.</td>
+            <td><span class="status-good">implemented smoke baseline</span></td>
+            <td>Default condition; agent sees current prompt and fixture state only, with no memory injection.</td>
+            <td>Needs full multi-session orchestration beyond current single graded-session smoke.</td>
           </tr>
           <tr>
             <td><code>repository_docs</code></td>
-            <td><span class="status-good">ready conceptually</span></td>
-            <td>Defined as file/document memory through <code>docs/agent-project-memory/</code>.</td>
-            <td>Implement fact materialization, supersede/forget handling, and per-condition fixture mutation.</td>
+            <td><span class="status-warn">scaffold only</span></td>
+            <td>Writes current valid facts to <code>docs/agent-project-memory/memswe-facts.md</code> in the temp worktree and records the doc artifact.</td>
+            <td>Not benchmark-ready: still needs fact materialization policy review, supersede/forget handling, session sequencing, and validation as a local-memory baseline.</td>
+          </tr>
+          <tr>
+            <td><code>full_context</code></td>
+            <td><span class="status-warn">known but not implemented</span></td>
+            <td>Recognized as a condition ID in the CLI scaffold.</td>
+            <td>Implement transcript assembly/injection and fixed-runtime controls.</td>
           </tr>
           <tr>
             <td><code>hindsight</code></td>
             <td><span class="status-warn">pilot target</span></td>
-            <td>Selected as first real AMS; adapter notes exist.</td>
-            <td>Smoke local Docker/API, prove bank reset, retain, recall, settle polling, delete/forget, trace export.</td>
+            <td>Recognized as a condition ID only; no real AMS calls are made by smoke.</td>
+            <td>Local Docker/API pilot requires a token, bank reset proof, retain/recall/delete behavior, settle polling, trace export, and complete local trace readiness.</td>
           </tr>
           <tr>
             <td><code>filesystem</code> / <code>rag</code></td>
@@ -470,10 +473,10 @@ pi-memswe/.memswe-runs/2026-06-16T21-12-46-602Z/repo-gamma-invoice-export-001/ve
         <div>
           <h3>Harness gaps</h3>
           <ul>
-            <li>Only one task is currently exercised through the smoke runner.</li>
-            <li>Current smoke is single-session <code>s3</code>, not full multi-session memory-condition execution.</li>
+            <li>All-task loop exists, but current faux/no-edit behavior is only a plumbing check; it is not a real agent performance run.</li>
+            <li>Current smoke executes a single graded session per task, not full multi-session memory-condition execution.</li>
             <li>Faux agent does not edit files, so trace predicates remain diagnostic/not evaluable.</li>
-            <li>Run-record is structurally useful but not yet schema-validated in the smoke command.</li>
+            <li><code>repository_docs</code> materialization is scaffold-only and needs policy/forget validation before being claimed as a baseline.</li>
             <li>Hidden tests are correctly isolated by default, but hidden-run mode still needs explicit policy around when it is allowed.</li>
           </ul>
         </div>
@@ -493,15 +496,16 @@ pi-memswe/.memswe-runs/2026-06-16T21-12-46-602Z/repo-gamma-invoice-export-001/ve
     <section class="card">
       <h2>Recommended next steps</h2>
       <ol>
-        <li><strong>Commit the verified Python setup change.</strong> It makes verifier execution closer to declared task environment behavior by creating a venv and running <code>harbor.environment.setup_command</code>.</li>
-        <li><strong>Add run-record schema validation to the smoke runner.</strong> Load <code>../memswe/schema/run-record.schema.json</code> and fail if emitted records drift.</li>
+        <li><strong>Keep README/status docs current.</strong> Update this page after harness milestones and include validation output with each docs pass.</li>
         <li><strong>Promote smoke phases into explicit harness phases.</strong> Split current script into <code>load_task</code>, <code>materialize_fixture</code>, <code>prepare_environment</code>, <code>run_agent_session</code>, <code>verify_artifacts</code>, and <code>emit_run_record</code>.</li>
-        <li><strong>Implement condition adapters for local baselines.</strong> Start with <code>no_memory</code>, <code>full_context</code>, and <code>repository_docs</code>; these do not require external services.</li>
+        <li><strong>Finish local baselines.</strong> Keep <code>no_memory</code> fixed, then complete and validate <code>repository_docs</code> before claiming it as a benchmark-ready condition.</li>
+        <li><strong>Implement full-context replay.</strong> Assemble session history without changing model, prompt template, tools, fixture visibility, verifier rules, repetition policy, or scoring.</li>
         <li><strong>Run full session sequence for one task.</strong> Execute <code>s1</code>, <code>s2</code>, and <code>s3</code> with condition-specific history delivery, not only the graded session.</li>
-        <li><strong>Capture patch/tool artifacts.</strong> For real agent runs, persist final diff, tool calls, stdout/stderr, final answer, and injected context spans.</li>
+        <li><strong>Capture real patch/tool artifacts.</strong> For real agent runs, persist final diff, tool calls, stdout/stderr, final answer, injected context spans, and trace IDs.</li>
         <li><strong>Make trace predicates evaluable.</strong> Connect predicate checks to retrieved memories, injected content, tool arguments, final response, and code diffs.</li>
-        <li><strong>Hindsight pilot spike.</strong> Run local Docker, create a bank per scope, retain seed facts, recall from a session prompt, delete/reset, and record provider IDs/latencies.</li>
-        <li><strong>Aggregate reporting.</strong> Add a report builder over `.memswe-runs/` that produces per-condition/task/model/repetition summaries aligned with MemSWE measurement docs.</li>
+        <li><strong>Hindsight pilot spike.</strong> Only after token/API scope and local trace readiness are complete: run local Docker/API, create a bank per scope, retain seed facts, recall from a session prompt, delete/reset, and record provider IDs/latencies.</li>
+        <li><strong>Real model / MiniMax pilot.</strong> Requires explicit API token approval plus complete local artifact/trace readiness; do not use this smoke path for unapproved provider calls.</li>
+        <li><strong>Aggregate reporting.</strong> Add a report builder over <code>.memswe-runs/</code> that produces per-condition/task/model/repetition summaries aligned with MemSWE measurement docs.</li>
       </ol>
     </section>
 
@@ -509,15 +513,19 @@ pi-memswe/.memswe-runs/2026-06-16T21-12-46-602Z/repo-gamma-invoice-export-001/ve
       <h2>Immediate command checklist</h2>
       <pre># from pi-memswe
 npm --prefix packages/coding-agent run memswe:smoke
+npm --prefix packages/coding-agent run memswe:smoke -- --condition=no_memory
+
+# targeted helper/runner tests
+cd packages/coding-agent
+node ../../node_modules/vitest/dist/cli.js --run test/suite/memswe-smoke-runner.test.ts
+cd ../..
+
+# full repo gate
 npm run check
 
 git status --short --branch
-git diff -- packages/coding-agent/scripts/memswe-smoke-runner.ts
 
-# if the current venv/setup change is accepted
-git add packages/coding-agent/scripts/memswe-smoke-runner.ts packages/coding-agent/docs/memswe-benchmark-status.html
-git commit -m "feat(coding-agent): prepare memswe verifier environment"
-git push origin main</pre>
+git diff -- README.md packages/coding-agent/README.md packages/coding-agent/docs/memswe-benchmark-status.html</pre>
     </section>
 
     <p class="footer">Generated from current local artifacts and command output in <code>/Users/eduardojaviergarcialopez/AgenticEngineering/PAP-membench</code>. This document is intentionally artifact-backed; update it after each harness milestone or benchmark pilot.</p>
