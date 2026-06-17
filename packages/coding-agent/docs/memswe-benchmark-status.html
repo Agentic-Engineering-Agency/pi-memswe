@@ -363,7 +363,7 @@
       <p>Representative commands run from <code>pi-memswe</code>. The first two use only the faux provider and harness-side verifiers; the MiniMax command is a separate guarded provider-plumbing smoke:</p>
       <pre>npm --prefix packages/coding-agent run memswe:smoke
 npm --prefix packages/coding-agent run memswe:smoke -- --all-tasks --continue-on-task-failure
-npm --prefix packages/coding-agent run memswe:smoke -- --task-id=repo-gamma-invoice-export-001 --condition=no_memory --agent-mode=minimax-real
+MEMSWE_ALLOW_REAL_MODEL=1 MINIMAX_API_KEY=&lt;redacted&gt; npm --prefix packages/coding-agent run memswe:smoke -- --task-id=repo-gamma-invoice-export-001 --condition=no_memory --agent-mode=minimax-real
 cd packages/coding-agent &amp;&amp; node ../../node_modules/vitest/dist/cli.js --run test/suite/memswe-smoke-runner.test.ts
 npm run check</pre>
       <div class="grid two" style="margin-top: 18px;">
@@ -371,7 +371,7 @@ npm run check</pre>
           <h3>Smoke runner behavior</h3>
           <ul>
             <li><strong>Default gamma:</strong> passes visible/protected verification with faux/no-edit agent behavior.</li>
-            <li><strong>MiniMax real-model mode:</strong> available only with explicit <code>--agent-mode=minimax-real</code>; selects pi provider <code>minimax</code> / model <code>MiniMax-M3</code>, requires an environment API key, disables agent tools, and is blocked for <code>--all-tasks</code> to avoid accidental multi-task spend.</li>
+            <li><strong>MiniMax real-model mode:</strong> available only with explicit <code>--agent-mode=minimax-real</code>; selects pi provider <code>minimax</code> / model <code>MiniMax-M3</code>, requires <code>MEMSWE_ALLOW_REAL_MODEL=1</code> plus an environment API key, disables agent tools, and is blocked for <code>--all-tasks</code> to avoid accidental multi-task spend.</li>
             <li><strong>All-task suite:</strong> six task descriptors discovered; latest summary recorded five expected verifier failures and one gamma pass.</li>
             <li><strong>Hidden verifier policy:</strong> hidden verifiers remain isolated and skipped by default unless explicitly enabled by harness policy.</li>
             <li><strong>Condition scaffold:</strong> <code>no_memory</code> default writes <code>condition-result.json</code>; <code>repository_docs</code> additionally writes a copied project-memory doc artifact.</li>

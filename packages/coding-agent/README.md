@@ -137,7 +137,7 @@ Condition support is intentionally narrow:
 
 `memswe:hindsight-smoke` is separate from `memswe:smoke`: it targets a local Hindsight API, creates/resets a smoke bank, seeds task-YAML-derived gamma facts, performs retain/recall/delete, and writes `hindsight-smoke-result.json`. Because retain/recall can use the configured Hindsight LLM provider, treat this as a real local AMS/API smoke that may incur model/token usage; do not run it without explicit token scope and approval.
 
-`memswe:smoke` defaults to deterministic `--agent-mode=faux-text`. A narrow real-model plumbing check is available as `--agent-mode=minimax-real`, which selects pi provider `minimax` / model `MiniMax-M3`, requires `MINIMAX_API_KEY` in the environment, disables agent tools, and is blocked for `--all-tasks` to avoid accidental multi-task spend. Note the endpoint distinction: the Hindsight/LiteLLM smoke uses the MiniMax token-plan endpoint `https://api.minimax.io/v1`, while pi's built-in MiniMax-M3 entry uses the provider's Anthropic-compatible endpoint `https://api.minimax.io/anthropic`.
+`memswe:smoke` defaults to deterministic `--agent-mode=faux-text`. A narrow real-model plumbing check is available as `--agent-mode=minimax-real`, which selects pi provider `minimax` / model `MiniMax-M3`, requires both `MEMSWE_ALLOW_REAL_MODEL=1` and `MINIMAX_API_KEY` in the environment, disables agent tools, and is blocked for `--all-tasks` to avoid accidental multi-task spend. Note the endpoint distinction: the Hindsight/LiteLLM smoke uses the MiniMax token-plan endpoint `https://api.minimax.io/v1`, while pi's built-in MiniMax-M3 entry uses the provider's Anthropic-compatible endpoint `https://api.minimax.io/anthropic`.
 
 Expected behavior with the faux/no-edit runner:
 

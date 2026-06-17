@@ -360,6 +360,9 @@ async function runFauxAgentSession(task: TaskYaml, taskDir: string, workdir: str
 async function runMinimaxAgentSession(task: TaskYaml, taskDir: string, workdir: string, artifactsDir: string): Promise<AgentRunResult> {
 	const gradedSession = resolveGradedSession(task);
 	const prompt = await readFile(join(taskDir, gradedSession.prompt_ref!), "utf8");
+	if (process.env.MEMSWE_ALLOW_REAL_MODEL !== "1") {
+		throw new Error("--agent-mode=minimax-real requires MEMSWE_ALLOW_REAL_MODEL=1 to confirm intentional real-model spend.");
+	}
 	const apiKey = process.env.MINIMAX_API_KEY ?? process.env.HINDSIGHT_API_LLM_API_KEY;
 	if (!apiKey) {
 		throw new Error("--agent-mode=minimax-real requires MINIMAX_API_KEY in the environment; HINDSIGHT_API_LLM_API_KEY is accepted for local smoke reuse.");
