@@ -139,6 +139,8 @@ Condition support is intentionally narrow:
 
 `memswe:smoke` defaults to deterministic `--agent-mode=faux-text`. A narrow real-model plumbing check is available as `--agent-mode=minimax-real`, which selects pi provider `minimax` / model `MiniMax-M3`, requires both `MEMSWE_ALLOW_REAL_MODEL=1` and `MINIMAX_API_KEY` in the environment, disables agent tools, and is blocked for `--all-tasks` to avoid accidental multi-task spend. Note the endpoint distinction: the Hindsight/LiteLLM smoke uses the MiniMax token-plan endpoint `https://api.minimax.io/v1`, while pi's built-in MiniMax-M3 entry uses the provider's Anthropic-compatible endpoint `https://api.minimax.io/anthropic`.
 
+`memswe:report` aggregates ignored `.memswe-runs/**` artifacts into a static browser report at `.memswe-runs/reports/latest/index.html`, with `run-summary.json` beside it. The report includes run records, verifier counts, suite summaries, Hindsight lifecycle smokes, and optional MiniMax/Hermes diagnostic review JSON files from `.memswe-runs/reviews/`.
+
 Expected behavior with the faux/no-edit runner:
 
 - The default gamma smoke should pass visible/protected verification.
@@ -166,6 +168,8 @@ Important files:
 - `repository-docs/memswe-facts.md`: only present for the `repository_docs` scaffold.
 
 The Hindsight local smoke writes `.memswe-runs/<timestamp>/hindsight-local-smoke/hindsight-smoke-result.json` with request/response trace events, predicate results, and structured failure guidance. It is provider-readiness evidence only, not a MemSWE task score.
+
+The report generator writes `.memswe-runs/reports/<timestamp>/index.html` and refreshes `.memswe-runs/reports/latest/index.html`. Generated report artifacts stay ignored; commit the generator, not the reports.
 
 All-task runs also write:
 
