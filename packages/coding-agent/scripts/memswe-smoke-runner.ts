@@ -22,6 +22,7 @@ import {
 	inferVerifierAssets,
 	initializeWorktreeBaseline,
 	preparePythonEnvironment,
+	validateRunRecordAgainstSchema,
 	validateRunRecordShape,
 	writePatchArtifacts,
 } from "./memswe-smoke-runner-lib.ts";
@@ -571,22 +572,23 @@ async function runTask(
 	const runId = `memswe-smoke-${taskId}-${timestamp}`;
 	const artifactsDir = join(RUNS_ROOT, timestamp, taskId);
 	const workdir = join(tmpdir(), runId, "worktree");
+	const repoDir = join(workdir, "fixture");
 	await rm(dirname(workdir), { recursive: true, force: true });
 	await mkdir(workdir, { recursive: true });
-	await cp(join(taskDir, "fixture"), workdir, { recursive: true });
+	await cp(join(taskDir, "fixture"), repoDir, { recursive: true });
 	await copyVerifierFiles(taskDir, workdir, parsed, includeHidden);
 	await mkdir(artifactsDir, { recursive: true });
-	const conditionResult = await prepareCondition(conditionId, parsed, workdir, artifactsDir);
-	await initializeWorktreeBaseline(workdir);
+	const conditionResult = await prepareCondition(conditionId, parsed, repoDir, artifactsDir);
+	await initializeWorktreeBaseline(repoDir);
 
-	const agentResult = skipFauxAgent ? undefined : await runAgentSession(agentMode, parsed, taskDir, workdir, artifactsDir);
+	const agentResult = skipFauxAgent ? undefined : await runAgentSession(agentMode, parsed, taskDir, repoDir, artifactsDir);
 	if (agentResult) {
 		console.log(
 			`${agentResult.agent_mode} agent session ${agentResult.session_id} finished with ${agentResult.status}; captured ${agentResult.event_count} event(s).`,
 		);
 	}
-	const patchArtifacts = await writePatchArtifacts(workdir, artifactsDir);
-	const pythonEnvironment = await preparePythonEnvironment(workdir, parsed.harbor?.environment?.setup_command);
+	const patchArtifacts = await writePatchArtifacts(repoDir, artifactsDir);
+	const pythonEnvironment = await preparePythonEnvironment(repoDir, parsed.harbor?.environment?.setup_command);
 	if (pythonEnvironment.setupResult) {
 		await writeFile(join(artifactsDir, "setup-result.json"), `${JSON.stringify(pythonEnvironment.setupResult, null, "	")}\n`);
 		console.log(
@@ -707,6 +709,7 @@ async function runTask(
 		},
 	};
 	validateRunRecordShape(record);
+	validateRunRecordAgainstSchema(record, join(MEMSWE_ROOT, "schema", "run-record.schema.json"));
 
 	await writeFile(join(artifactsDir, "agent-result.json"), `${JSON.stringify(agentResult ?? null, null, "	")}\n`);
 	await writeFile(join(artifactsDir, "verifier-results.json"), `${JSON.stringify(results, null, "	")}\n`);

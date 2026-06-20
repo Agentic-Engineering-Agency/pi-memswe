@@ -10,6 +10,7 @@ import {
 	initializeWorktreeBaseline,
 	preparePythonEnvironment,
 	type TaskYaml,
+	validateRunRecordAgainstSchema,
 	validateRunRecordShape,
 	writePatchArtifacts,
 } from "../../scripts/memswe-smoke-runner-lib.ts";
@@ -95,6 +96,24 @@ describe("memswe smoke runner run-record validation", () => {
 
 		expect(() => validateRunRecordShape(record)).toThrow("Missing condition_id");
 	});
+
+	test("accepts records that conform to the canonical run-record schema", () => {
+		expect(() =>
+			validateRunRecordAgainstSchema(
+				validSchemaRunRecord(),
+				resolve(MEMSWE_ROOT, "schema", "run-record.schema.json"),
+			),
+		).not.toThrow();
+	});
+
+	test("rejects records missing schema-required metric_vector", () => {
+		const record: Partial<ReturnType<typeof validSchemaRunRecord>> = validSchemaRunRecord();
+		delete record.metric_vector;
+
+		expect(() =>
+			validateRunRecordAgainstSchema(record, resolve(MEMSWE_ROOT, "schema", "run-record.schema.json")),
+		).toThrow("Run record violates run-record.schema.json");
+	});
 });
 
 describe("memswe smoke runner task discovery", () => {
@@ -106,6 +125,7 @@ describe("memswe smoke runner task discovery", () => {
 			"repo-epsilon-control-001",
 			"repo-epsilon-http-policy-001",
 			"repo-gamma-invoice-export-001",
+			"repo-zeta-retry-endpoint-forgetting-001",
 		]);
 	});
 });
@@ -125,5 +145,31 @@ function validRunRecord(): {
 		condition: { condition_id: "no_memory" },
 		session_results: [{ session_id: "s1" }],
 		output_locations: { artifacts_dir: "/tmp/artifacts" },
+	};
+}
+
+function validSchemaRunRecord() {
+	return {
+		schema_version: "uam-run.v0.1",
+		run_id: "run-1",
+		task_id: "task-1",
+		condition: {
+			condition_id: "no_memory",
+			model_id: "faux-text",
+			repetition_index: 1,
+			k: 1,
+		},
+		session_results: [
+			{
+				session_id: "s1",
+				status: "completed",
+				trace_id: "trace-1",
+			},
+		],
+		metric_vector: {},
+		output_locations: {
+			trace_store_ref: "trace-store://run-1",
+			artifacts_dir: "/tmp/artifacts",
+		},
 	};
 }
