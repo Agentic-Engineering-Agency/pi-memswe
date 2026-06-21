@@ -1,7 +1,10 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import Ajv2020Default, { Ajv2020 as Ajv2020Class, type ErrorObject } from "ajv/dist/2020.js";
+
+const Ajv2020 = Ajv2020Default as unknown as typeof Ajv2020Class;
 
 export type VerifierKind = "visible" | "hidden" | "protected";
 
@@ -195,6 +198,16 @@ export async function writePatchArtifacts(workdir: string, artifactsDir: string)
 	await writeFile(agentPatchPath, diff.stdout);
 	await writeFile(changedFilesPath, `${JSON.stringify(changedFiles, null, "	")}\n`);
 	return { agentPatch: agentPatchPath, worktreeDiff: worktreeDiffPath, changedFiles: changedFilesPath };
+}
+
+export function validateRunRecordAgainstSchema(record: unknown, schemaPath: string): void {
+	const schema = JSON.parse(readFileSync(schemaPath, "utf8"));
+	const ajv = new Ajv2020({ allErrors: true, strict: false });
+	const validate = ajv.compile(schema);
+	if (!validate(record)) {
+		const errors = (validate.errors ?? []).map((error: ErrorObject) => `${error.instancePath || "/"} ${error.message ?? ""}`.trim());
+		throw new Error(`Run record violates run-record.schema.json: ${errors.join("; ")}`);
+	}
 }
 
 export function validateRunRecordShape(record: unknown): void {
