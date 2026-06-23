@@ -2,7 +2,7 @@
 
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "../../..");
@@ -34,6 +34,7 @@ type RunSummary = {
 	eventCount: number | null;
 	messageCount: number | null;
 	error: string | null;
+	primaryFailureCategory: string | null;
 	visiblePassed: number;
 	visibleTotal: number;
 	protectedPassed: number;
@@ -158,11 +159,28 @@ function statusFromExit(exitCode: number | null): "passed" | "failed" | "skipped
 	if (exitCode === null) return "skipped";
 	return exitCode === 0 ? "passed" : "failed";
 }
+export function summarizeRunRecordForReport(record: unknown): {
+	reward: number | null;
+	primaryFailureCategory: string | null;
+	sessionId: string | null;
+	status: string;
+} {
+	const runRecord = objectAt(record) ?? {};
+	const reward = objectAt(runRecord.reward) ?? {};
+	const sessions = arrayAt(runRecord.session_results);
+	const firstSession = objectAt(sessions[0]) ?? {};
+	return {
+		reward: numberAt(reward.reward),
+		primaryFailureCategory: stringAt(runRecord.primary_failure_category),
+		sessionId: stringAt(firstSession.session_id),
+		status: stringAt(firstSession.status) ?? "unknown",
+	};
+}
+
 
 async function loadRun(path: string): Promise<RunSummary> {
 	const record = await readJson(path);
 	const condition = objectAt(record.condition) ?? {};
-	const reward = objectAt(record.reward) ?? {};
 	const sessions = arrayAt(record.session_results);
 	const firstSession = objectAt(sessions[0]) ?? {};
 	const artifactPaths = objectAt(firstSession.artifact_paths) ?? {};
@@ -192,6 +210,7 @@ async function loadRun(path: string): Promise<RunSummary> {
 	const providerId = agent ? stringAt(agent.provider_id) : null;
 	const modelId = agent ? stringAt(agent.model_id) : null;
 
+	const runSummary = summarizeRunRecordForReport(record);
 	return {
 		runId: stringAt(record.run_id) ?? "unknown",
 		timestamp: timestampFromPath(path),
@@ -199,15 +218,16 @@ async function loadRun(path: string): Promise<RunSummary> {
 		conditionId: stringAt(condition.condition_id) ?? "unknown",
 		modelId: stringAt(condition.model_id) ?? "unknown",
 		memorySystem: stringAt(condition.memory_system),
-		reward: numberAt(reward.reward),
-		status: stringAt(firstSession.status) ?? "unknown",
-		sessionId: stringAt(firstSession.session_id),
+		reward: runSummary.reward,
+		status: runSummary.status,
+		sessionId: runSummary.sessionId,
 		agentMode: agent ? stringAt(agent.agent_mode) : null,
 		providerModel: providerId && modelId ? `${providerId}/${modelId}` : null,
 		baseUrl: agent ? stringAt(agent.base_url) : null,
 		eventCount: agent ? numberAt(agent.event_count) : null,
 		messageCount: agent ? numberAt(agent.message_count) : null,
 		error: agent ? stringAt(agent.error) : null,
+		primaryFailureCategory: runSummary.primaryFailureCategory,
 		visiblePassed: visible.filter((verifier) => verifier.status === "passed").length,
 		visibleTotal: visible.length,
 		protectedPassed: protectedVerifiers.filter((verifier) => verifier.status === "passed").length,
@@ -400,4 +420,6 @@ async function main(): Promise<void> {
 	console.log(`Wrote ${relative(REPO_ROOT, join(REPORTS_ROOT, "latest", "index.html"))}`);
 }
 
-await main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+	await main();
+}

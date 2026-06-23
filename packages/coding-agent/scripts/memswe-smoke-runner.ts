@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { copyFile, cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai";
 import { parse } from "yaml";
 import {
@@ -26,6 +26,7 @@ import {
 	validateRunRecordShape,
 	writePatchArtifacts,
 } from "./memswe-smoke-runner-lib.ts";
+import { createMemSweTrace, memoryLatencySummary, traceCompletenessSummary } from "./memswe-trace-scaffold.ts";
 
 const DEFAULT_TASK_ID = "repo-gamma-invoice-export-001";
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -88,6 +89,8 @@ type VerifierCommand = {
 	id: string;
 	kind: VerifierKind;
 	command: string;
+	f2p: boolean;
+	p2p: boolean;
 };
 
 type CommandResult = VerifierCommand & {
@@ -97,6 +100,18 @@ type CommandResult = VerifierCommand & {
 	stderr: string;
 	duration_ms: number;
 };
+type RewardBlock = {
+	reward: 1;
+	f2p_total: number;
+	f2p_passed: number;
+	p2p_total: number;
+	p2p_passed: number;
+	f2p: number;
+	p2p: number;
+	partial: number;
+	apply_failed: 0 | 1;
+};
+
 
 type AgentRunResult = {
 	session_id: string;
@@ -130,17 +145,7 @@ type RunRecord = {
 		trace_id: string | null;
 		artifact_paths: Record<string, string>;
 	}>;
-	reward: {
-		reward: 0 | 1;
-		f2p_total: number;
-		f2p_passed: number;
-		p2p_total: number;
-		p2p_passed: number;
-		f2p: number;
-		p2p: number;
-		partial: number;
-		apply_failed: 0 | 1;
-	};
+	reward?: RewardBlock;
 	metric_vector: Record<string, number | null | number[] | Record<string, number>>;
 	trace_predicate_results: Array<{
 		id: string;
@@ -260,6 +265,43 @@ function resolveGradedSession(task: TaskYaml): SessionSpec {
 		throw new Error("Graded session is missing session_id or prompt_ref");
 	}
 	return session;
+}
+
+export function resolveRunSessionId(task: TaskYaml, agentResult?: Pick<AgentRunResult, "session_id">): string {
+	if (agentResult) return agentResult.session_id;
+	return resolveGradedSession(task).session_id!;
+}
+
+type ScoreRewardInput = Pick<CommandResult, "kind" | "exit_code"> & {
+	f2p?: boolean;
+	p2p?: boolean;
+};
+
+export function scoreReward(results: ScoreRewardInput[]): RewardBlock | undefined {
+	const f2pResults = results.filter((result) => result.kind === "hidden" && result.f2p !== false);
+	if (f2pResults.length === 0 || f2pResults.some((result) => result.exit_code !== 0)) return undefined;
+
+	const p2pResults = results.filter((result) => result.kind === "protected" || result.p2p === true);
+	const passed = (items: ScoreRewardInput[]) => items.filter((item) => item.exit_code === 0).length;
+	return {
+		reward: 1,
+		f2p_total: f2pResults.length,
+		f2p_passed: passed(f2pResults),
+		p2p_total: p2pResults.length,
+		p2p_passed: passed(p2pResults),
+		f2p: 1,
+		p2p: p2pResults.length === 0 ? 0 : passed(p2pResults) / p2pResults.length,
+		partial: results.length === 0 ? 0 : passed(results) / results.length,
+		apply_failed: 0,
+	};
+}
+
+export function classifyPrimaryFailureCategory(
+	agentResult: Pick<AgentRunResult, "status"> | undefined,
+	allPassed: boolean,
+): RunRecord["primary_failure_category"] {
+	if (agentResult?.status === "errored") return "process_failure";
+	return allPassed ? null : "task_failure";
 }
 
 function createMemSwerResourceLoader(): ResourceLoader {
@@ -446,6 +488,8 @@ function verifierCommands(task: TaskYaml, includeHidden: boolean): VerifierComma
 				id: spec.id ?? `${kind}-${index + 1}`,
 				kind,
 				command: spec.command,
+				f2p: spec.f2p === true || kind === "hidden",
+				p2p: spec.p2p === true || kind === "protected",
 			};
 		}),
 	);
@@ -563,6 +607,7 @@ async function runTask(
 	skipFauxAgent: boolean,
 	conditionId: MemoryConditionId,
 	agentMode: AgentMode,
+	traceEnabled: boolean,
 ): Promise<TaskRunResult> {
 	const taskDir = join(MEMSWE_ROOT, "tasks", taskId);
 	const taskYamlPath = join(taskDir, "task.yaml");
@@ -570,6 +615,8 @@ async function runTask(
 	if (!isTaskYaml(parsed)) throw new Error(`Expected object task YAML at ${taskYamlPath}`);
 
 	const runId = `memswe-smoke-${taskId}-${timestamp}`;
+	const trace = createMemSweTrace(runId, traceEnabled);
+	const benchmarkSpan = trace.startSpan("benchmark", "benchmark.run", { task_id: taskId, condition_id: conditionId, agent_mode: agentMode });
 	const artifactsDir = join(RUNS_ROOT, timestamp, taskId);
 	const workdir = join(tmpdir(), runId, "worktree");
 	const repoDir = join(workdir, "fixture");
@@ -578,7 +625,9 @@ async function runTask(
 	await cp(join(taskDir, "fixture"), repoDir, { recursive: true });
 	await copyVerifierFiles(taskDir, workdir, parsed, includeHidden);
 	await mkdir(artifactsDir, { recursive: true });
+	const memorySpan = trace.startSpan("memory", "memory.prepare", { condition_id: conditionId });
 	const conditionResult = await prepareCondition(conditionId, parsed, repoDir, artifactsDir);
+	memorySpan.end();
 	await initializeWorktreeBaseline(repoDir);
 
 	const agentResult = skipFauxAgent ? undefined : await runAgentSession(agentMode, parsed, taskDir, repoDir, artifactsDir);
@@ -609,22 +658,28 @@ async function runTask(
 	const results: CommandResult[] = [];
 	for (const command of commands) {
 		console.log(`Running ${command.kind} verifier ${command.id}: ${command.command}`);
+		const verifierSpan = trace.startSpan("verifier", `verifier.${command.kind}`, { verifier_id: command.id, verifier_kind: command.kind });
 		const result = await runCommand(command, workdir, timeoutMs, pythonEnvironment.shimDir);
+		verifierSpan.end();
 		results.push(result);
 		console.log(`Finished ${command.id} with exit ${result.exit_code ?? `signal ${result.signal ?? "timeout"}`}`);
 	}
 
+	const scoringSpan = trace.startSpan("scoring", "scoring.reward");
 	const visible = results.filter((result) => result.kind === "visible");
 	const hidden = results.filter((result) => result.kind === "hidden");
 	const protectedResults = results.filter((result) => result.kind === "protected");
 	const passed = (items: CommandResult[]) => items.filter((item) => item.exit_code === 0).length;
-	const f2pTotal = hidden.length;
-	const f2pPassed = passed(hidden);
-	const p2pTotal = protectedResults.length;
-	const p2pPassed = passed(protectedResults);
+	const reward = scoreReward(results);
 	const verifiersPassed = results.length > 0 && passed(results) === results.length;
 	const agentPassed = agentResult?.status !== "errored";
 	const allPassed = verifiersPassed && agentPassed;
+	scoringSpan.end();
+	benchmarkSpan.end();
+	const traceArtifact = trace.toArtifact();
+	const traceCompleteness = traceCompletenessSummary(traceArtifact);
+	const memoryLatency = memoryLatencySummary(traceArtifact);
+	const traceArtifactPath = join(artifactsDir, "memswe-trace.json");
 	const record: RunRecord = {
 		run_id: runId,
 		task_id: parsed.harbor?.metadata?.task_id ?? taskId,
@@ -639,9 +694,9 @@ async function runTask(
 		},
 		session_results: [
 			{
-				session_id: agentResult?.session_id ?? "s3",
+				session_id: resolveRunSessionId(parsed, agentResult),
 				status: allPassed ? "completed" : "errored",
-				trace_id: null,
+				trace_id: trace.traceId,
 				artifact_paths: {
 					workdir,
 					agent_result: join(artifactsDir, "agent-result.json"),
@@ -651,30 +706,21 @@ async function runTask(
 					agent_patch: patchArtifacts.agentPatch,
 					worktree_diff: patchArtifacts.worktreeDiff,
 					changed_files: patchArtifacts.changedFiles,
+					trace_artifact: traceArtifactPath,
 					...conditionResult.artifact_paths,
 					verifier_results: join(artifactsDir, "verifier-results.json"),
 					skipped_hidden_verifiers: join(artifactsDir, "skipped-hidden-verifiers.json"),
 				},
 			},
 		],
-		reward: {
-			reward: allPassed ? 1 : 0,
-			f2p_total: f2pTotal,
-			f2p_passed: f2pPassed,
-			p2p_total: p2pTotal,
-			p2p_passed: p2pPassed,
-			f2p: f2pTotal === 0 ? 0 : f2pPassed / f2pTotal,
-			p2p: p2pTotal === 0 ? 0 : p2pPassed / p2pTotal,
-			partial: results.length === 0 ? 0 : passed(results) / results.length,
-			apply_failed: 0,
-		},
+		...(reward ? { reward } : {}),
 		metric_vector: {
 			task_success_visible: visible.length === 0 ? null : passed(visible) / visible.length,
 			task_success_hidden: hidden.length === 0 ? null : passed(hidden) / hidden.length,
 			per_task_cost_usd: 0,
 			end_to_end_task_latency_ms: results.reduce((sum, result) => sum + result.duration_ms, 0),
-			memory_retrieval_latency_p50_ms: null,
-			memory_retrieval_latency_p95_ms: null,
+			memory_retrieval_latency_p50_ms: memoryLatency.p50_ms,
+			memory_retrieval_latency_p95_ms: memoryLatency.p95_ms,
 			total_tokens: 0,
 			input_tokens: 0,
 			output_tokens: 0,
@@ -693,17 +739,25 @@ async function runTask(
 			stale_use_rate: null,
 			leakage_count: null,
 			repeated_failed_action_count: null,
-			trace_coverage: null,
+			trace_coverage: trace.enabled ? traceCompleteness.traceCoverage : null,
 		},
-		trace_predicate_results: (parsed.memswe?.trace_predicates ?? []).map((predicate) => ({
-			id: predicate.id ?? "unknown",
-			outcome: "not_evaluable",
-			severity: predicate.severity ?? "diagnostic",
-			evidence_ref: null,
-		})),
-		primary_failure_category: allPassed ? null : "task_failure",
+		trace_predicate_results: [
+			...(parsed.memswe?.trace_predicates ?? []).map((predicate) => ({
+				id: predicate.id ?? "unknown",
+				outcome: "not_evaluable" as const,
+				severity: predicate.severity ?? "diagnostic",
+				evidence_ref: null,
+			})),
+			{
+				id: "otel_trace_complete",
+				outcome: trace.enabled ? (traceCompleteness.complete ? "pass" : "fail") : "not_evaluable",
+				severity: "diagnostic",
+				evidence_ref: trace.enabled ? traceArtifactPath : null,
+			},
+		],
+		primary_failure_category: classifyPrimaryFailureCategory(agentResult, allPassed),
 		output_locations: {
-			trace_store_ref: join(artifactsDir, "verifier-results.json"),
+			trace_store_ref: trace.traceStoreRef ?? join(artifactsDir, "verifier-results.json"),
 			postgres_run_ref: null,
 			artifacts_dir: artifactsDir,
 		},
@@ -717,6 +771,7 @@ async function runTask(
 		join(artifactsDir, "skipped-hidden-verifiers.json"),
 		`${JSON.stringify(skippedHiddenCommands, null, "	")}\n`,
 	);
+	await writeFile(traceArtifactPath, `${JSON.stringify(traceArtifact, null, "	")}\n`);
 	const runRecordPath = join(artifactsDir, "run-record.json");
 	await writeFile(runRecordPath, `${JSON.stringify(record, null, "	")}\n`);
 	console.log(`Wrote ${relative(REPO_ROOT, runRecordPath)}`);
@@ -728,9 +783,10 @@ async function main(): Promise<void> {
 	const skipFauxAgent = hasFlag("--skip-faux-agent");
 	const conditionId = parseConditionId(getArgumentValue("--condition"));
 	const agentMode = parseAgentMode(getArgumentValue("--agent-mode"));
+	const traceEnabled = hasFlag("--otel-trace");
 	const timestamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
 	if (!hasFlag("--all-tasks")) {
-		const result = await runTask(getArgumentValue("--task-id") ?? DEFAULT_TASK_ID, timestamp, includeHidden, skipFauxAgent, conditionId, agentMode);
+		const result = await runTask(getArgumentValue("--task-id") ?? DEFAULT_TASK_ID, timestamp, includeHidden, skipFauxAgent, conditionId, agentMode, traceEnabled);
 		if (!result.allPassed) process.exitCode = 1;
 		return;
 	}
@@ -745,7 +801,7 @@ async function main(): Promise<void> {
 	let hasFailure = false;
 	for (const taskId of await discoverTaskIds(MEMSWE_ROOT)) {
 		try {
-			const result = await runTask(taskId, timestamp, includeHidden, skipFauxAgent, conditionId, agentMode);
+			const result = await runTask(taskId, timestamp, includeHidden, skipFauxAgent, conditionId, agentMode, traceEnabled);
 			const status = result.allPassed ? "passed" : "failed";
 			hasFailure = hasFailure || !result.allPassed;
 			taskResults.push({
@@ -780,4 +836,6 @@ async function main(): Promise<void> {
 	if (hasFailure) process.exitCode = 1;
 }
 
-await main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+	await main();
+}
