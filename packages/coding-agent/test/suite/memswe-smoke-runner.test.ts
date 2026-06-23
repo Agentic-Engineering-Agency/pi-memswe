@@ -31,10 +31,14 @@ describe("memswe smoke runner Python environment", () => {
 	test("creates an isolated venv and runs setup commands inside it", async () => {
 		const workdir = await mkdtemp(join(tmpdir(), "memswe-env-test-"));
 		try {
-			const env = await preparePythonEnvironment(
-				workdir,
-				"python -c 'import pathlib, sys; pathlib.Path(\"venv-prefix.txt\").write_text(sys.prefix)'",
-			);
+			const task: TaskYaml = {
+				harbor: {
+					environment: {
+						setup_command: "python -c 'import pathlib, sys; pathlib.Path(\"venv-prefix.txt\").write_text(sys.prefix)'",
+					},
+				},
+			};
+			const env = await preparePythonEnvironment(workdir, task);
 			const prefix = await readFile(join(workdir, "venv-prefix.txt"), "utf8");
 
 			expect(prefix).toContain(".memswe-venv");
