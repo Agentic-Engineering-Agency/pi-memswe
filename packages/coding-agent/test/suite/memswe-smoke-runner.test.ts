@@ -14,6 +14,18 @@ import {
 	validateRunRecordShape,
 	writePatchArtifacts,
 } from "../../scripts/memswe-smoke-runner-lib.ts";
+import {
+	createDisabledMemSweTrace,
+	createEnabledMemSweTrace,
+	memoryLatencySummary,
+	traceCompletenessSummary,
+} from "../../scripts/memswe-trace-scaffold.ts";
+import {
+	classifyPrimaryFailureCategory,
+	resolveRunSessionId,
+	scoreReward,
+} from "../../scripts/memswe-smoke-runner.ts";
+import { summarizeRunRecordForReport } from "../../scripts/memswe-report-generator.ts";
 
 const CODING_AGENT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const PI_ROOT = resolve(CODING_AGENT_ROOT, "../..");
@@ -113,6 +125,117 @@ describe("memswe smoke runner run-record validation", () => {
 		expect(() =>
 			validateRunRecordAgainstSchema(record, resolve(MEMSWE_ROOT, "schema", "run-record.schema.json")),
 		).toThrow("Run record violates run-record.schema.json");
+	});
+});
+
+describe("memswe smoke runner scoring", () => {
+	test("treats reward as not evaluable until every hidden f2p verifier passes", () => {
+		expect(
+			scoreReward([
+				{ kind: "hidden", f2p: true, p2p: false, exit_code: 1 },
+				{ kind: "protected", f2p: false, p2p: true, exit_code: 0 },
+			]),
+		).toBeUndefined();
+		expect(
+			scoreReward([
+				{ kind: "visible", f2p: false, p2p: false, exit_code: 0 },
+				{ kind: "protected", f2p: false, p2p: true, exit_code: 0 },
+			]),
+		).toBeUndefined();
+	});
+
+	test("emits reward only when all hidden f2p verifiers pass", () => {
+		expect(
+			scoreReward([
+				{ kind: "hidden", f2p: true, p2p: false, exit_code: 0 },
+				{ kind: "protected", f2p: false, p2p: true, exit_code: 0 },
+			]),
+		).toMatchObject({
+			reward: 1,
+			f2p_total: 1,
+			f2p_passed: 1,
+			p2p_total: 1,
+			p2p_passed: 1,
+		});
+	});
+});
+
+describe("memswe smoke runner session fallback", () => {
+	test("falls back to the per-task graded session including zeta s4", () => {
+		expect(
+			resolveRunSessionId({
+				memswe: {
+					session_sequence: [
+						{ session_id: "s1", prompt_ref: "sessions/s1.md" },
+						{ session_id: "s4", prompt_ref: "sessions/s4.md", graded: true },
+					],
+				},
+			}),
+		).toBe("s4");
+	});
+
+	test("classifies agent errors as process failures", () => {
+		expect(classifyPrimaryFailureCategory({ status: "errored" }, false)).toBe("process_failure");
+		expect(classifyPrimaryFailureCategory({ status: "completed" }, false)).toBe("task_failure");
+		expect(classifyPrimaryFailureCategory({ status: "completed" }, true)).toBeNull();
+	});
+});
+
+describe("memswe report generator run summary", () => {
+	test("parses not-evaluable rewards and failure categories", () => {
+		expect(
+			summarizeRunRecordForReport({
+				reward: undefined,
+				primary_failure_category: "process_failure",
+				session_results: [{ session_id: "s4", status: "errored" }],
+			}),
+		).toEqual({
+			reward: null,
+			primaryFailureCategory: "process_failure",
+			sessionId: "s4",
+			status: "errored",
+		});
+	});
+});
+
+describe("memswe OTel trace scaffold", () => {
+	test("stays inert unless trace flag is enabled", () => {
+		const trace = createDisabledMemSweTrace("run-1");
+
+		const span = trace.startSpan("benchmark", "benchmark.run");
+		span.end();
+
+		expect(trace.enabled).toBe(false);
+		expect(trace.traceId).toBeNull();
+		expect(trace.toArtifact()).toEqual({ enabled: false });
+		expect(traceCompletenessSummary(trace.toArtifact())).toEqual({
+			complete: false,
+			missingKinds: ["benchmark", "memory", "verifier", "scoring"],
+			traceCoverage: 0,
+		});
+	});
+
+	test("records sanitized benchmark memory verifier and scoring spans", () => {
+		const trace = createEnabledMemSweTrace("memswe-smoke-task-2026", 1000);
+
+		trace.startSpan("benchmark", "benchmark.run", { task_id: "task-1", secret: "sk-nope" }, 1000).end(1010);
+		trace.startSpan("memory", "memory.prepare", { condition_id: "repository_docs" }, 1000).end(1020);
+		trace.startSpan("verifier", "verifier.visible", { verifier_id: "visible-1" }, 1000).end(1035);
+		trace.startSpan("scoring", "scoring.reward", { reward_evaluable: true }, 1000).end(1040);
+
+		const artifact = trace.toArtifact();
+
+		expect(artifact.trace_id).toBe("memswe-smoke-task-2026");
+		expect(artifact.trace_store_ref).toBe("memswe-trace://memswe-smoke-task-2026");
+		expect(artifact.spans.map((span) => span.kind)).toEqual(["benchmark", "memory", "verifier", "scoring"]);
+		expect(artifact.spans.map((span) => span.duration_ms)).toEqual([10, 20, 35, 40]);
+		expect(artifact.spans[0]?.attributes).toEqual({ task_id: "task-1" });
+		expect(traceCompletenessSummary(artifact)).toEqual({
+			complete: true,
+			missingKinds: [],
+			traceCoverage: 1,
+		});
+		expect(memoryLatencySummary(artifact)).toEqual({ p50_ms: 20, p95_ms: 20 });
 	});
 });
 
