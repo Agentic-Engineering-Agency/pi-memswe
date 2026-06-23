@@ -4,6 +4,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
+import { type FactSpec, type TaskYaml, validFactsBeforeSession } from "./memswe-smoke-runner-lib.ts";
 
 const SCRIPT_DIR = resolve(fileURLToPath(import.meta.url), "..");
 const REPO_ROOT = resolve(SCRIPT_DIR, "../../..");
@@ -41,22 +42,6 @@ type SmokeResult = {
 	};
 };
 
-type TaskYaml = {
-	harbor?: { metadata?: { task_id?: string } };
-	memswe?: {
-		session_sequence?: Array<{ session_id?: string; graded?: boolean }>;
-		facts?: { introduce?: FactSpec[] };
-	};
-};
-
-type FactSpec = {
-	id?: string;
-	text?: string;
-	first_valid_session?: string;
-	invalid_after_session?: string;
-	forget_requested_session?: string;
-	expected_use?: string;
-};
 
 async function requestJson(method: string, path: string, trace: TraceEvent[], body?: JsonValue): Promise<{ status: number; json: JsonValue }> {
 	const started = Date.now();
@@ -113,31 +98,6 @@ function memoryTexts(json: JsonValue): string[] {
 		.filter((text) => text.length > 0);
 }
 
-function compareSessionIds(left: string | undefined, right: string): number {
-	if (!left) return 1;
-	return sessionIndex(left) - sessionIndex(right);
-}
-
-function sessionIndex(sessionId: string): number {
-	const parsed = Number(sessionId.slice(1));
-	return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
-}
-
-function resolveGradedSessionId(task: TaskYaml): string {
-	const graded = task.memswe?.session_sequence?.find((session) => session.graded);
-	if (!graded?.session_id) throw new Error(`Task ${TASK_ID} does not declare a graded session`);
-	return graded.session_id;
-}
-
-function validFactsBeforeSession(task: TaskYaml, sessionId: string): FactSpec[] {
-	return (task.memswe?.facts?.introduce ?? []).filter((fact) => {
-		if (!fact.id || !fact.text || fact.expected_use === "forbidden") return false;
-		if (compareSessionIds(fact.first_valid_session, sessionId) > 0) return false;
-		if (compareSessionIds(fact.invalid_after_session, sessionId) <= 0) return false;
-		if (compareSessionIds(fact.forget_requested_session, sessionId) <= 0) return false;
-		return true;
-	});
-}
 
 async function loadTaskFacts(): Promise<FactSpec[]> {
 	const taskPath = join(MEMSWE_ROOT, "tasks", TASK_ID, "task.yaml");

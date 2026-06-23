@@ -23,8 +23,10 @@ import {
 	initializeWorktreeBaseline,
 	preparePythonEnvironment,
 	scrubSecretEnv,
+	type TaskYaml,
 	validateRunRecordAgainstSchema,
 	validateRunRecordShape,
+	validFactsBeforeSession,
 	writePatchArtifacts,
 } from "./memswe-smoke-runner-lib.ts";
 import { createMemSweTrace, memoryLatencySummary, traceCompletenessSummary } from "./memswe-trace-scaffold.ts";
@@ -41,50 +43,6 @@ type VerifierKind = "visible" | "hidden" | "protected";
 type MemoryConditionId = (typeof MEMORY_CONDITION_IDS)[number];
 type AgentMode = (typeof AGENT_MODE_IDS)[number];
 
-type TaskYaml = {
-	schema_version?: string;
-	harbor?: {
-		metadata?: { task_id?: string };
-		verifier?: { timeout_sec?: number };
-		environment?: { setup_command?: string };
-	};
-	memswe?: {
-		memory_conditions?: Array<{ id?: string; memory_system?: string }>;
-		session_sequence?: SessionSpec[];
-		facts?: {
-			introduce?: FactSpec[];
-		};
-		verifiers?: {
-			visible_tests?: VerifierSpec[];
-			hidden_tests?: VerifierSpec[];
-			protected_tests?: VerifierSpec[];
-		};
-		trace_predicates?: Array<{ id?: string; severity?: "blocking" | "diagnostic" }>;
-	};
-};
-
-type SessionSpec = {
-	session_id?: string;
-	prompt_ref?: string;
-	graded?: boolean;
-};
-
-type VerifierSpec = {
-	id?: string;
-	command?: string;
-	agent_visible?: boolean;
-	f2p?: boolean;
-	p2p?: boolean;
-};
-
-type FactSpec = {
-	id?: string;
-	text?: string;
-	first_valid_session?: string;
-	invalid_after_session?: string;
-	forget_requested_session?: string;
-	expected_use?: string;
-};
 
 type VerifierCommand = {
 	id: string;
@@ -585,25 +543,6 @@ function repositoryDocsMarkdown(task: TaskYaml): string {
 	].join("\n")}\n`;
 }
 
-function validFactsBeforeSession(task: TaskYaml, sessionId: string): FactSpec[] {
-	return (task.memswe?.facts?.introduce ?? []).filter((fact) => {
-		if (!fact.text || fact.expected_use === "forbidden") return false;
-		if (compareSessionIds(fact.first_valid_session, sessionId) > 0) return false;
-		if (compareSessionIds(fact.invalid_after_session, sessionId) <= 0) return false;
-		if (compareSessionIds(fact.forget_requested_session, sessionId) <= 0) return false;
-		return true;
-	});
-}
-
-function compareSessionIds(left: string | undefined, right: string): number {
-	if (!left) return 1;
-	return sessionIndex(left) - sessionIndex(right);
-}
-
-function sessionIndex(sessionId: string): number {
-	const parsed = Number(sessionId.slice(1));
-	return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
-}
 
 async function runTask(
 	taskId: string,
