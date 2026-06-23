@@ -98,6 +98,28 @@ export async function runShellCommand(
 	});
 }
 
+export const SECRET_ENV_NAME_PATTERN = /(?:secret|token|key|authorization|password|credential|langfuse|otel_exporter)/i;
+
+/**
+ * Build a child-process env from process.env with harness secrets removed
+ * (any var whose NAME matches SECRET_ENV_NAME_PATTERN — API keys, tokens,
+ * Langfuse/OTLP creds). Used for the verifier command AND the task-author
+ * setup_command / venv creation so author- or agent-reachable subprocesses
+ * never inherit the harness's credentials. Optionally prepends `prependPath`
+ * to PATH (e.g. the venv/shim bin dir).
+ */
+export function scrubSecretEnv(prependPath?: string): NodeJS.ProcessEnv {
+	const env: NodeJS.ProcessEnv = {};
+	for (const [key, value] of Object.entries(process.env)) {
+		if (SECRET_ENV_NAME_PATTERN.test(key)) continue;
+		env[key] = value;
+	}
+	if (prependPath) {
+		env.PATH = `${prependPath}:${process.env.PATH ?? ""}`;
+	}
+	return env;
+}
+
 export async function preparePythonEnvironment(
 	workdir: string,
 	task: TaskYaml,
@@ -109,11 +131,11 @@ export async function preparePythonEnvironment(
 
 	const venvDir = join(workdir, ".memswe-venv");
 	const venvBinDir = join(venvDir, "bin");
-	const createVenvResult = await runShellCommand("python3 -m venv .memswe-venv", workdir, process.env, 120_000);
+	const createVenvResult = await runShellCommand("python3 -m venv .memswe-venv", workdir, scrubSecretEnv(), 120_000);
 	if (createVenvResult.exit_code !== 0) {
 		throw new Error(`Failed to create verifier virtualenv: ${createVenvResult.stderr || createVenvResult.stdout}`);
 	}
-	const setupEnv = { ...process.env, PATH: `${venvBinDir}:${process.env.PATH ?? ""}` };
+	const setupEnv = scrubSecretEnv(venvBinDir);
 	const setupResult = setupCommand ? await runShellCommand(setupCommand, workdir, setupEnv, 300_000) : undefined;
 	if (setupResult && setupResult.exit_code !== 0) {
 		throw new Error(`Verifier setup failed: ${setupResult.stderr || setupResult.stdout}`);

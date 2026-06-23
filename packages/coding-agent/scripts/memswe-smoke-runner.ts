@@ -22,6 +22,7 @@ import {
 	inferVerifierAssets,
 	initializeWorktreeBaseline,
 	preparePythonEnvironment,
+	scrubSecretEnv,
 	validateRunRecordAgainstSchema,
 	validateRunRecordShape,
 	writePatchArtifacts,
@@ -35,8 +36,6 @@ const MEMSWE_ROOT = resolve(REPO_ROOT, "../memswe");
 const RUNS_ROOT = join(REPO_ROOT, ".memswe-runs");
 const MEMORY_CONDITION_IDS = ["no_memory", "full_context", "repository_docs", "hindsight"] as const;
 const AGENT_MODE_IDS = ["faux-text", "minimax-real"] as const;
-const SECRET_ENV_NAME_PATTERN = /(?:secret|token|key|authorization|password|credential|langfuse|otel_exporter)/i;
-
 
 type VerifierKind = "visible" | "hidden" | "protected";
 type MemoryConditionId = (typeof MEMORY_CONDITION_IDS)[number];
@@ -534,13 +533,7 @@ async function runCommand(command: VerifierCommand, cwd: string, timeoutMs: numb
 }
 
 function verifierEnvironment(shimDir: string): NodeJS.ProcessEnv {
-	const env: NodeJS.ProcessEnv = {};
-	for (const [key, value] of Object.entries(process.env)) {
-		if (SECRET_ENV_NAME_PATTERN.test(key)) continue;
-		env[key] = value;
-	}
-	env.PATH = `${shimDir}:${process.env.PATH ?? ""}`;
-	return env;
+	return scrubSecretEnv(shimDir);
 }
 
 async function copyVerifierFiles(taskDir: string, workdir: string, task: TaskYaml, includeHidden: boolean): Promise<void> {
