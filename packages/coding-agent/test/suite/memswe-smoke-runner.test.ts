@@ -313,7 +313,12 @@ describe("memswe smoke runner task discovery", () => {
 			"repo-delta-billing-url-001",
 			"repo-epsilon-control-001",
 			"repo-epsilon-http-policy-001",
+			"repo-eta-ownership-identification-001",
 			"repo-gamma-invoice-export-001",
+			"repo-iota-abstention-settings-001",
+			"repo-kappa-api-version-freshness-001",
+			"repo-lambda-secret-withholding-001",
+			"repo-theta-dispatch-config-lifecycle-001",
 			"repo-zeta-retry-endpoint-forgetting-001",
 		]);
 	});

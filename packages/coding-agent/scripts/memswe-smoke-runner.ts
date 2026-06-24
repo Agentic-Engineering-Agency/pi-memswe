@@ -26,7 +26,7 @@ import {
 	validateRunRecordShape,
 	writePatchArtifacts,
 } from "./memswe-smoke-runner-lib.ts";
-import { createMemSweTrace, memoryLatencySummary, traceCompletenessSummary } from "./memswe-trace-scaffold.ts";
+import { createMemSweTrace, isMemSweOtlpExportConfigured, memoryLatencySummary, traceCompletenessSummary } from "./memswe-trace-scaffold.ts";
 
 const DEFAULT_TASK_ID = "repo-gamma-invoice-export-001";
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -796,7 +796,7 @@ async function main(): Promise<void> {
 	const skipFauxAgent = hasFlag("--skip-faux-agent");
 	const conditionId = parseConditionId(getArgumentValue("--condition"));
 	const agentMode = parseAgentMode(getArgumentValue("--agent-mode"));
-	const traceEnabled = hasFlag("--otel-trace");
+	const traceEnabled = !hasFlag("--no-otel-trace") && (hasFlag("--otel-trace") || isMemSweOtlpExportConfigured());
 	const timestamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
 	if (!hasFlag("--all-tasks")) {
 		const result = await runTask(getArgumentValue("--task-id") ?? DEFAULT_TASK_ID, timestamp, includeHidden, skipFauxAgent, conditionId, agentMode, traceEnabled);
