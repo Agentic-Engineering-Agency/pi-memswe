@@ -199,6 +199,10 @@ function resolveMemSweOtlpExporterConfig(env = process.env): MemSweOtlpExporterC
 	return null;
 }
 
+export function isMemSweOtlpExportConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
+	return resolveMemSweOtlpExporterConfig(env) !== null;
+}
+
 function resolveLangfuseBasicAuthHeader(env: NodeJS.ProcessEnv): string | undefined {
 	const publicKey = env.LANGFUSE_PUBLIC_KEY;
 	const secretKey = env.LANGFUSE_SECRET_KEY;
