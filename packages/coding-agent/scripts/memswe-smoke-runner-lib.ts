@@ -9,21 +9,48 @@ const Ajv2020 = Ajv2020Default as unknown as typeof Ajv2020Class;
 export type VerifierKind = "visible" | "hidden" | "protected";
 
 export type TaskYaml = {
+	schema_version?: string;
 	harbor?: {
+		metadata?: { task_id?: string };
+		verifier?: { timeout_sec?: number };
 		environment?: { setup_command?: string };
 	};
 	memswe?: {
+		memory_conditions?: Array<{ id?: string; memory_system?: string }>;
+		session_sequence?: SessionSpec[];
+		facts?: {
+			introduce?: FactSpec[];
+		};
 		verifiers?: {
 			visible_tests?: VerifierSpec[];
 			hidden_tests?: VerifierSpec[];
 			protected_tests?: VerifierSpec[];
 		};
+		trace_predicates?: Array<{ id?: string; severity?: "blocking" | "diagnostic" }>;
 	};
 };
 
-type VerifierSpec = {
+export type SessionSpec = {
+	session_id?: string;
+	prompt_ref?: string;
+	graded?: boolean;
+};
+
+export type FactSpec = {
+	id?: string;
+	text?: string;
+	first_valid_session?: string;
+	invalid_after_session?: string;
+	forget_requested_session?: string;
+	expected_use?: string;
+};
+
+export type VerifierSpec = {
+	id?: string;
 	command?: string;
 	agent_visible?: boolean;
+	f2p?: boolean;
+	p2p?: boolean;
 };
 
 export type VerifierAsset = {
@@ -98,6 +125,28 @@ export async function runShellCommand(
 	});
 }
 
+export const SECRET_ENV_NAME_PATTERN = /(?:secret|token|key|authorization|password|credential|langfuse|otel_exporter)/i;
+
+/**
+ * Build a child-process env from process.env with harness secrets removed
+ * (any var whose NAME matches SECRET_ENV_NAME_PATTERN — API keys, tokens,
+ * Langfuse/OTLP creds). Used for the verifier command AND the task-author
+ * setup_command / venv creation so author- or agent-reachable subprocesses
+ * never inherit the harness's credentials. Optionally prepends `prependPath`
+ * to PATH (e.g. the venv/shim bin dir).
+ */
+export function scrubSecretEnv(prependPath?: string): NodeJS.ProcessEnv {
+	const env: NodeJS.ProcessEnv = {};
+	for (const [key, value] of Object.entries(process.env)) {
+		if (SECRET_ENV_NAME_PATTERN.test(key)) continue;
+		env[key] = value;
+	}
+	if (prependPath) {
+		env.PATH = `${prependPath}:${process.env.PATH ?? ""}`;
+	}
+	return env;
+}
+
 export async function preparePythonEnvironment(
 	workdir: string,
 	task: TaskYaml,
@@ -109,11 +158,11 @@ export async function preparePythonEnvironment(
 
 	const venvDir = join(workdir, ".memswe-venv");
 	const venvBinDir = join(venvDir, "bin");
-	const createVenvResult = await runShellCommand("python3 -m venv .memswe-venv", workdir, process.env, 120_000);
+	const createVenvResult = await runShellCommand("python3 -m venv .memswe-venv", workdir, scrubSecretEnv(), 120_000);
 	if (createVenvResult.exit_code !== 0) {
 		throw new Error(`Failed to create verifier virtualenv: ${createVenvResult.stderr || createVenvResult.stdout}`);
 	}
-	const setupEnv = { ...process.env, PATH: `${venvBinDir}:${process.env.PATH ?? ""}` };
+	const setupEnv = scrubSecretEnv(venvBinDir);
 	const setupResult = setupCommand ? await runShellCommand(setupCommand, workdir, setupEnv, 300_000) : undefined;
 	if (setupResult && setupResult.exit_code !== 0) {
 		throw new Error(`Verifier setup failed: ${setupResult.stderr || setupResult.stdout}`);
@@ -248,4 +297,24 @@ export async function discoverTaskIds(memsweRoot: string): Promise<string[]> {
 		.filter((entry) => entry.isDirectory() && existsSync(join(tasksRoot, entry.name, "task.yaml")))
 		.map((entry) => entry.name)
 		.sort();
+}
+
+export function validFactsBeforeSession(task: TaskYaml, sessionId: string): FactSpec[] {
+	return (task.memswe?.facts?.introduce ?? []).filter((fact) => {
+		if (!fact.text || fact.expected_use === "forbidden") return false;
+		if (fact.first_valid_session && compareSessionIds(fact.first_valid_session, sessionId) >= 0) return false;
+		if (compareSessionIds(fact.invalid_after_session, sessionId) < 0) return false;
+		if (compareSessionIds(fact.forget_requested_session, sessionId) < 0) return false;
+		return true;
+	});
+}
+
+export function compareSessionIds(left: string | undefined, right: string): number {
+	if (!left) return 1;
+	return sessionIndex(left) - sessionIndex(right);
+}
+
+export function sessionIndex(sessionId: string): number {
+	const parsed = Number(sessionId.slice(1));
+	return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
 }
