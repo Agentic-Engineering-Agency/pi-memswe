@@ -649,7 +649,7 @@ async function runTask(
 		);
 	}
 	const patchArtifacts = await writePatchArtifacts(repoDir, artifactsDir);
-	const pythonEnvironment = await preparePythonEnvironment(repoDir, parsed.harbor?.environment?.setup_command);
+	const pythonEnvironment = await preparePythonEnvironment(repoDir, parsed);
 	if (pythonEnvironment.setupResult) {
 		await writeFile(join(artifactsDir, "setup-result.json"), `${JSON.stringify(pythonEnvironment.setupResult, null, "	")}\n`);
 		console.log(
