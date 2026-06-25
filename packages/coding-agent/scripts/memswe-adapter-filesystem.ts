@@ -1,7 +1,7 @@
 #!/usr/bin/env -S npx tsx
 
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type {
@@ -57,7 +57,12 @@ function approxTokens(text: string): number {
 }
 
 function sanitize(id: string): string {
-	return id.replace(/[^a-zA-Z0-9_.-]/g, "_");
+	// Map any char outside the safe set to "_" — this already collapses "/" and "\" so the result is
+	// a single path segment (no separators). The remaining traversal risk is a DOTS-ONLY segment
+	// ("", ".", ".."), which would resolve to cwd or memoryRoot's PARENT and let reset()/delete()
+	// rm -rf OUTSIDE memoryRoot — so map any dots-only id to a safe token.
+	const cleaned = id.replace(/[^a-zA-Z0-9_.-]/g, "_");
+	return /^\.*$/.test(cleaned) ? "_scope_" : cleaned;
 }
 
 /** Lexical overlap score: how many distinct query terms appear in the doc (case-insensitive). */
@@ -82,7 +87,15 @@ export class FilesystemAdapter implements AmsAdapter {
 	}
 
 	private scopeDir(scope: AdapterScope): string {
-		return join(this.memoryRoot, sanitize(scope.id));
+		const dir = join(this.memoryRoot, sanitize(scope.id));
+		// Defense-in-depth: the resolved scope dir MUST stay within memoryRoot, so reset()/delete()
+		// (rm -rf) can never escape it even if sanitize is ever weakened.
+		const root = resolve(this.memoryRoot);
+		const resolved = resolve(dir);
+		if (resolved !== root && !resolved.startsWith(root + sep)) {
+			throw new Error(`FilesystemAdapter: scope ${JSON.stringify(scope.id)} escapes memoryRoot`);
+		}
+		return dir;
 	}
 
 	async reset(scope: AdapterScope): Promise<NormalizedTrace> {
@@ -213,6 +226,12 @@ export async function runFilesystemLifecycleSmoke(): Promise<FilesystemSmokeResu
 	try {
 		await adapter.reset(scope);
 		predicates.reset_completed = true;
+		// Path-traversal guard (review hardening): a pathological scope id must never sanitize to a
+		// dots-only or separator-bearing segment, so reset()/delete() (rm -rf) can never escape memoryRoot.
+		predicates.sanitize_blocks_traversal = ["..", ".", "...", "../../etc", "a/../b", "/", ""].every((evil) => {
+			const s = sanitize(evil);
+			return !/^\.*$/.test(s) && !s.includes("/") && !s.includes("\\");
+		});
 		const content = `MemSWE filesystem smoke fact ${scope.id}: retain recall delete lifecycle marker.`;
 		await adapter.seed([{ scope, operation: "write", content, metadata: { smoke: true } }]);
 		predicates.retain_completed = true;
