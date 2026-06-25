@@ -18,6 +18,16 @@ import type {
 	NormalizedTraceEvent,
 } from "./memswe-adapter-contract.ts";
 
+// Self-hosting recipe (AMB-47) — followable by another coding agent:
+//   1. Clone getzep/graphiti; in deploy/, set NEO4J_PASSWORD and OPENAI_API_KEY (LLM + embedder).
+//      The bundled FastAPI service (graphiti `server/`) exposes the REST surface this adapter uses.
+//   2. `docker compose up` (Neo4j + graph-service) → service on http://127.0.0.1:8000.
+//   3. Point the smoke at it: GRAPHITI_API_URL=http://127.0.0.1:8000 \
+//        npx tsx packages/coding-agent/scripts/memswe-adapter-graphiti.ts
+//   Auth (if enabled): GRAPHITI_API_KEY=<key> or GRAPHITI_AUTH_HEADER="Bearer <token>".
+// REST surface: POST /messages (seed group), POST /search (group_ids+query), GET /episodes/{group},
+//   DELETE /group/{group} (reset/delete). Group-per-scope (group_id = scope.id) gives run isolation.
+
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "../../..");
 const RUNS_ROOT = join(REPO_ROOT, ".memswe-runs");
@@ -26,6 +36,8 @@ const DEFAULT_API_URL = "http://127.0.0.1:8000";
 const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_RECALL_TIMEOUT_MS = 15_000;
 const DEFAULT_RECALL_POLL_MS = 750;
+// After group delete, search the (now-empty) group to prove group-per-scope isolation (post-reset miss).
+const DEFAULT_MISS_TIMEOUT_MS = 10_000;
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
@@ -58,6 +70,7 @@ type GraphitiSmokeResult = {
 	scope_id: string;
 	status: "passed" | "failed" | "skipped";
 	predicate_results: Record<string, boolean>;
+	settle_ms: number | null;
 	export: AdapterExport | null;
 	error?: {
 		failed_phase: string;
@@ -252,16 +265,24 @@ export async function runGraphitiLifecycleSmoke(): Promise<GraphitiSmokeResult> 
 		timeoutMs: Number(process.env.GRAPHITI_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS),
 	});
 	const predicates: Record<string, boolean> = {};
+	let settleMs: number | null = null;
 	try {
 		await adapter.reset(scope);
 		predicates.reset_completed = true;
 		const content = `MemSWE Graphiti smoke fact ${scope.id}: retain recall delete lifecycle marker.`;
 		await adapter.seed([{ scope, operation: "write", content, metadata: { smoke: true } }]);
 		predicates.retain_completed = true;
+		// Graphiti extracts facts into the graph asynchronously → poll search; record settle time.
+		const settleStart = Date.now();
 		const retained = await waitForRecall(adapter, scope, `Find lifecycle marker for ${scope.id}`, scope.id, "lifecycle marker");
+		settleMs = retained ? Date.now() - settleStart : null;
 		predicates.recall_after_retain = retained;
+		await adapter.observe();
+		predicates.observe_completed = true;
 		await adapter.delete(scope);
 		predicates.delete_completed = true;
+		// Group-per-scope isolation proof: after the group is deleted, search must not surface the marker.
+		predicates.recall_miss_after_delete = await waitForMiss(adapter, scope, `Find lifecycle marker for ${scope.id}`, scope.id);
 		const exported = await adapter.export();
 		return {
 			schema_version: "memswe-graphiti-smoke.v0.1",
@@ -270,6 +291,7 @@ export async function runGraphitiLifecycleSmoke(): Promise<GraphitiSmokeResult> 
 			scope_id: scope.id,
 			status: Object.values(predicates).every(Boolean) ? "passed" : "failed",
 			predicate_results: predicates,
+			settle_ms: settleMs,
 			export: exported,
 		};
 	} catch (caught) {
@@ -283,6 +305,7 @@ export async function runGraphitiLifecycleSmoke(): Promise<GraphitiSmokeResult> 
 			scope_id: scope.id,
 			status: "failed",
 			predicate_results: predicates,
+			settle_ms: settleMs,
 			export: exported,
 			error: {
 				failed_phase: failedPhase(exported),
@@ -329,6 +352,16 @@ async function waitForRecall(adapter: GraphitiAdapter, scope: AdapterScope, prom
 	return false;
 }
 
+async function waitForMiss(adapter: GraphitiAdapter, scope: AdapterScope, prompt: string, ...needles: string[]): Promise<boolean> {
+	const deadline = Date.now() + Number(process.env.GRAPHITI_MISS_TIMEOUT_MS ?? DEFAULT_MISS_TIMEOUT_MS);
+	while (Date.now() <= deadline) {
+		const result = await adapter.run({ scope, prompt });
+		if (!needles.some((needle) => result.output.includes(needle))) return true;
+		await delay(Number(process.env.GRAPHITI_RECALL_POLL_MS ?? DEFAULT_RECALL_POLL_MS));
+	}
+	return false;
+}
+
 function isUnavailable(message: string): boolean {
 	return message.includes("fetch failed") || message.includes("ECONNREFUSED") || message.includes("AbortError") || message.includes("HTTP 401");
 }
@@ -341,6 +374,7 @@ function skippedSmoke(scope: AdapterScope, message: string, apiUrl: string | nul
 		scope_id: scope.id,
 		status: "skipped",
 		predicate_results: {},
+		settle_ms: null,
 		export: exported,
 		error: {
 			failed_phase: "preflight",
@@ -363,7 +397,7 @@ async function main(): Promise<void> {
 	const result = await runGraphitiLifecycleSmoke();
 	const resultPath = join(artifactsDir, "graphiti-smoke-result.json");
 	await writeFile(resultPath, `${JSON.stringify(result, null, "\t")}\n`);
-	console.log(`Graphiti lifecycle smoke ${result.status}`);
+	console.log(`Graphiti lifecycle smoke ${result.status}${result.settle_ms != null ? ` (settle ${result.settle_ms}ms)` : ""}`);
 	console.log(`Wrote ${relative(REPO_ROOT, resultPath)}`);
 	if (result.error) console.log(result.error.guidance);
 	if (result.status === "failed") process.exitCode = 1;
