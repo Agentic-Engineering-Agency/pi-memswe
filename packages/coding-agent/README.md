@@ -141,6 +141,26 @@ Condition support is intentionally narrow:
 
 `memswe:report` aggregates ignored `.memswe-runs/**` artifacts into a static browser report at `.memswe-runs/reports/latest/index.html`, with `run-summary.json` beside it. The report includes run records, verifier counts, suite summaries, Hindsight lifecycle smokes, and optional MiniMax/Hermes diagnostic review JSON files from `.memswe-runs/reviews/`.
 
+### Observability (Langfuse)
+
+The smoke runner can export complete observability for harness runs to [Langfuse](https://langfuse.com) across two complementary layers:
+
+- **Harness spans** (`memswe-trace-scaffold.ts`): benchmark, memory, verifier, and scoring spans plus run-level metrics, exported over OTLP. These activate when `--otel-trace` is passed or an OTLP endpoint is configured, and write to Langfuse when `LANGFUSE_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_ENDPOINT`) and the `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` Basic-auth pair are set.
+- **Agent traces** (the [`pi-langfuse`](https://www.npmjs.com/package/pi-langfuse) extension): one Langfuse trace per agent run with root agent, per-request generation, and per-tool observations covering the prompt, provider requests, tool calls, final response, usage, and cost. The runner loads this extension into the faux and minimax agent sessions when agent tracing is configured.
+
+Configure both with the same Langfuse project:
+
+```bash
+export LANGFUSE_PUBLIC_KEY="pk-lf-xxxx"
+export LANGFUSE_SECRET_KEY="sk-lf-xxxx"
+export LANGFUSE_BASE_URL="https://cloud.langfuse.com"             # pi-langfuse agent traces
+export LANGFUSE_OTLP_ENDPOINT="https://cloud.langfuse.com/api/public/otel"  # harness spans
+
+npm --prefix packages/coding-agent run memswe:smoke -- --otel-trace
+```
+
+Agent tracing activates only when `pi-langfuse` finds credentials: the `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` environment pair, or a saved `~/.pi/agent/pi-langfuse/config.json` (written by `/langfuse-setup` in interactive Pi). Without credentials the extension is inert and the deterministic faux path is unchanged, so default smokes do not call Langfuse. `--no-otel-trace` disables both layers. When agent tracing is active for a session the runner logs `Langfuse agent tracing active for session <id>` and records `langfuse_tracing: true` in `agent-result.json`. `pi-langfuse` redacts secrets and local paths before upload and exposes privacy presets (`LANGFUSE_PRIVACY_PRESET`); review its [README](https://www.npmjs.com/package/pi-langfuse) before enabling captures on real-model runs. Langfuse credentials are scrubbed from verifier and setup subprocess environments, so traces never reach agent- or author-controlled commands.
+
 Expected behavior with the faux/no-edit runner:
 
 - The default gamma smoke should pass visible/protected verification.
@@ -158,7 +178,7 @@ Each task run writes artifacts under:
 Important files:
 
 - `run-record.json`: MemSWE-shaped run record (`uam-run.v0.1`) after local shape validation.
-- `agent-result.json`: selected agent mode, provider/model/base URL, session status, prompt ref, final response, and event/message counts.
+- `agent-result.json`: selected agent mode, provider/model/base URL, session status, prompt ref, final response, event/message counts, and whether Langfuse agent tracing was active (`langfuse_tracing`).
 - `agent-events.json`, `agent-messages.json`, `agent-final-response.txt`: captured pi session artifacts.
 - `setup-result.json`: task environment setup command result when the task declares one.
 - `verifier-results.json`: harness-side visible/protected verifier command results.

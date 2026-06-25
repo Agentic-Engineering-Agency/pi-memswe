@@ -12,21 +12,25 @@ import {
 	type AgentSessionEvent,
 	createAgentSession,
 	createExtensionRuntime,
+	type LoadExtensionsResult,
 	ModelRegistry,
 	type ResourceLoader,
 	SessionManager,
 	SettingsManager,
 } from "../src/index.ts";
+import { isLangfuseAgentTracingConfigured, loadLangfuseExtensions } from "./memswe-langfuse-extension.ts";
 import {
 	discoverTaskIds,
 	inferVerifierAssets,
 	initializeWorktreeBaseline,
 	preparePythonEnvironment,
 	scrubSecretEnv,
+	type SessionSpec,
 	type TaskYaml,
 	validateRunRecordAgainstSchema,
 	validateRunRecordShape,
 	validFactsBeforeSession,
+	type VerifierSpec,
 	writePatchArtifacts,
 } from "./memswe-smoke-runner-lib.ts";
 import { createMemSweTrace, isMemSweOtlpExportConfigured, memoryLatencySummary, traceCompletenessSummary } from "./memswe-trace-scaffold.ts";
@@ -84,6 +88,7 @@ type AgentRunResult = {
 	model_id: string;
 	provider_id: string;
 	base_url: string;
+	langfuse_tracing: boolean;
 };
 
 type RunRecord = {
@@ -263,9 +268,9 @@ export function classifyPrimaryFailureCategory(
 	return allPassed ? null : "task_failure";
 }
 
-function createMemSwerResourceLoader(): ResourceLoader {
+function createMemSwerResourceLoader(extensions: LoadExtensionsResult): ResourceLoader {
 	return {
-		getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
+		getExtensions: () => extensions,
 		getSkills: () => ({ skills: [], diagnostics: [] }),
 		getPrompts: () => ({ prompts: [], diagnostics: [] }),
 		getThemes: () => ({ themes: [], diagnostics: [] }),
@@ -278,9 +283,18 @@ Do not call tools. Do not edit files. Acknowledge the task prompt and stop.`,
 	};
 }
 
-async function runFauxAgentSession(task: TaskYaml, taskDir: string, workdir: string, artifactsDir: string): Promise<AgentRunResult> {
+async function runFauxAgentSession(
+	task: TaskYaml,
+	taskDir: string,
+	workdir: string,
+	artifactsDir: string,
+	observabilityEnabled: boolean,
+): Promise<AgentRunResult> {
 	const gradedSession = resolveGradedSession(task);
 	const prompt = await readFile(join(taskDir, gradedSession.prompt_ref!), "utf8");
+	const extensions = observabilityEnabled
+		? await loadLangfuseExtensions(workdir)
+		: { extensions: [], errors: [], runtime: createExtensionRuntime() };
 	const fauxProvider = registerFauxProvider();
 	const model = fauxProvider.getModel();
 	fauxProvider.setResponses([
@@ -318,7 +332,7 @@ async function runFauxAgentSession(task: TaskYaml, taskDir: string, workdir: str
 		thinkingLevel: "off",
 		authStorage,
 		modelRegistry,
-		resourceLoader: createMemSwerResourceLoader(),
+		resourceLoader: createMemSwerResourceLoader(extensions),
 		tools: [],
 		sessionManager: SessionManager.inMemory(workdir),
 		settingsManager,
@@ -356,10 +370,17 @@ async function runFauxAgentSession(task: TaskYaml, taskDir: string, workdir: str
 		model_id: model.id,
 		provider_id: model.provider,
 		base_url: model.baseUrl,
+		langfuse_tracing: extensions.extensions.length > 0,
 	};
 }
 
-async function runMinimaxAgentSession(task: TaskYaml, taskDir: string, workdir: string, artifactsDir: string): Promise<AgentRunResult> {
+async function runMinimaxAgentSession(
+	task: TaskYaml,
+	taskDir: string,
+	workdir: string,
+	artifactsDir: string,
+	observabilityEnabled: boolean,
+): Promise<AgentRunResult> {
 	const gradedSession = resolveGradedSession(task);
 	const prompt = await readFile(join(taskDir, gradedSession.prompt_ref!), "utf8");
 	if (process.env.MEMSWE_ALLOW_REAL_MODEL !== "1") {
@@ -376,6 +397,9 @@ async function runMinimaxAgentSession(task: TaskYaml, taskDir: string, workdir: 
 	const model = modelRegistry.find("minimax", "MiniMax-M3");
 	if (!model) throw new Error("MiniMax-M3 model is not registered for provider minimax");
 
+	const extensions = observabilityEnabled
+		? await loadLangfuseExtensions(workdir)
+		: { extensions: [], errors: [], runtime: createExtensionRuntime() };
 	const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false } });
 	const events: AgentSessionEvent[] = [];
 	const { session } = await createAgentSession({
@@ -385,7 +409,7 @@ async function runMinimaxAgentSession(task: TaskYaml, taskDir: string, workdir: 
 		thinkingLevel: "off",
 		authStorage,
 		modelRegistry,
-		resourceLoader: createMemSwerResourceLoader(),
+		resourceLoader: createMemSwerResourceLoader(extensions),
 		tools: [],
 		sessionManager: SessionManager.inMemory(workdir),
 		settingsManager,
@@ -422,12 +446,22 @@ async function runMinimaxAgentSession(task: TaskYaml, taskDir: string, workdir: 
 		model_id: model.id,
 		provider_id: model.provider,
 		base_url: model.baseUrl,
+		langfuse_tracing: extensions.extensions.length > 0,
 	};
 }
 
-async function runAgentSession(agentMode: AgentMode, task: TaskYaml, taskDir: string, workdir: string, artifactsDir: string): Promise<AgentRunResult> {
-	if (agentMode === "minimax-real") return runMinimaxAgentSession(task, taskDir, workdir, artifactsDir);
-	return runFauxAgentSession(task, taskDir, workdir, artifactsDir);
+async function runAgentSession(
+	agentMode: AgentMode,
+	task: TaskYaml,
+	taskDir: string,
+	workdir: string,
+	artifactsDir: string,
+	observabilityEnabled: boolean,
+): Promise<AgentRunResult> {
+	if (agentMode === "minimax-real") {
+		return runMinimaxAgentSession(task, taskDir, workdir, artifactsDir, observabilityEnabled);
+	}
+	return runFauxAgentSession(task, taskDir, workdir, artifactsDir, observabilityEnabled);
 }
 
 function verifierCommands(task: TaskYaml, includeHidden: boolean): VerifierCommand[] {
@@ -552,6 +586,7 @@ async function runTask(
 	conditionId: MemoryConditionId,
 	agentMode: AgentMode,
 	traceEnabled: boolean,
+	agentTracingEnabled: boolean,
 ): Promise<TaskRunResult> {
 	const taskDir = join(MEMSWE_ROOT, "tasks", taskId);
 	const taskYamlPath = join(taskDir, "task.yaml");
@@ -574,11 +609,16 @@ async function runTask(
 	memorySpan.end();
 	await initializeWorktreeBaseline(repoDir);
 
-	const agentResult = skipFauxAgent ? undefined : await runAgentSession(agentMode, parsed, taskDir, repoDir, artifactsDir);
+	const agentResult = skipFauxAgent
+		? undefined
+		: await runAgentSession(agentMode, parsed, taskDir, repoDir, artifactsDir, agentTracingEnabled);
 	if (agentResult) {
 		console.log(
 			`${agentResult.agent_mode} agent session ${agentResult.session_id} finished with ${agentResult.status}; captured ${agentResult.event_count} event(s).`,
 		);
+		if (agentResult.langfuse_tracing) {
+			console.log(`Langfuse agent tracing active for session ${agentResult.session_id}.`);
+		}
 	}
 	const patchArtifacts = await writePatchArtifacts(repoDir, artifactsDir);
 	const pythonEnvironment = await preparePythonEnvironment(repoDir, parsed);
@@ -729,9 +769,10 @@ async function main(): Promise<void> {
 	const conditionId = parseConditionId(getArgumentValue("--condition"));
 	const agentMode = parseAgentMode(getArgumentValue("--agent-mode"));
 	const traceEnabled = !hasFlag("--no-otel-trace") && (hasFlag("--otel-trace") || isMemSweOtlpExportConfigured());
+	const agentTracingEnabled = !hasFlag("--no-otel-trace") && isLangfuseAgentTracingConfigured();
 	const timestamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
 	if (!hasFlag("--all-tasks")) {
-		const result = await runTask(getArgumentValue("--task-id") ?? DEFAULT_TASK_ID, timestamp, includeHidden, skipFauxAgent, conditionId, agentMode, traceEnabled);
+		const result = await runTask(getArgumentValue("--task-id") ?? DEFAULT_TASK_ID, timestamp, includeHidden, skipFauxAgent, conditionId, agentMode, traceEnabled, agentTracingEnabled);
 		if (!result.allPassed) process.exitCode = 1;
 		return;
 	}
@@ -746,7 +787,7 @@ async function main(): Promise<void> {
 	let hasFailure = false;
 	for (const taskId of await discoverTaskIds(MEMSWE_ROOT)) {
 		try {
-			const result = await runTask(taskId, timestamp, includeHidden, skipFauxAgent, conditionId, agentMode, traceEnabled);
+			const result = await runTask(taskId, timestamp, includeHidden, skipFauxAgent, conditionId, agentMode, traceEnabled, agentTracingEnabled);
 			const status = result.allPassed ? "passed" : "failed";
 			hasFailure = hasFailure || !result.allPassed;
 			taskResults.push({
