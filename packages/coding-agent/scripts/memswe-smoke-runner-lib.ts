@@ -9,18 +9,48 @@ const Ajv2020 = Ajv2020Default as unknown as typeof Ajv2020Class;
 export type VerifierKind = "visible" | "hidden" | "protected";
 
 export type TaskYaml = {
+	schema_version?: string;
+	harbor?: {
+		metadata?: { task_id?: string };
+		verifier?: { timeout_sec?: number };
+		environment?: { setup_command?: string };
+	};
 	memswe?: {
+		memory_conditions?: Array<{ id?: string; memory_system?: string }>;
+		session_sequence?: SessionSpec[];
+		facts?: {
+			introduce?: FactSpec[];
+		};
 		verifiers?: {
 			visible_tests?: VerifierSpec[];
 			hidden_tests?: VerifierSpec[];
 			protected_tests?: VerifierSpec[];
 		};
+		trace_predicates?: Array<{ id?: string; severity?: "blocking" | "diagnostic" }>;
 	};
 };
 
-type VerifierSpec = {
+export type SessionSpec = {
+	session_id?: string;
+	prompt_ref?: string;
+	graded?: boolean;
+};
+
+export type FactSpec = {
+	id?: string;
+	text?: string;
+	first_valid_session?: string;
+	invalid_after_session?: string;
+	forget_requested_session?: string;
+	expected_use?: string;
+};
+
+export type VerifierSpec = {
+	id?: string;
 	command?: string;
 	agent_visible?: boolean;
+	f2p?: boolean;
+	p2p?: boolean;
 };
 
 export type VerifierAsset = {
@@ -235,4 +265,24 @@ export async function discoverTaskIds(memsweRoot: string): Promise<string[]> {
 		.filter((entry) => entry.isDirectory() && existsSync(join(tasksRoot, entry.name, "task.yaml")))
 		.map((entry) => entry.name)
 		.sort();
+}
+
+export function validFactsBeforeSession(task: TaskYaml, sessionId: string): FactSpec[] {
+	return (task.memswe?.facts?.introduce ?? []).filter((fact) => {
+		if (!fact.text || fact.expected_use === "forbidden") return false;
+		if (fact.first_valid_session && compareSessionIds(fact.first_valid_session, sessionId) >= 0) return false;
+		if (compareSessionIds(fact.invalid_after_session, sessionId) < 0) return false;
+		if (compareSessionIds(fact.forget_requested_session, sessionId) < 0) return false;
+		return true;
+	});
+}
+
+export function compareSessionIds(left: string | undefined, right: string): number {
+	if (!left) return 1;
+	return sessionIndex(left) - sessionIndex(right);
+}
+
+export function sessionIndex(sessionId: string): number {
+	const parsed = Number(sessionId.slice(1));
+	return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
 }

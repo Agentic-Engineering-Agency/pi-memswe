@@ -262,8 +262,8 @@
         <div class="pill-row">
           <span class="pill good">Default gamma smoke: passing</span>
           <span class="pill good">All-task loop: scaffolded</span>
-          <span class="pill warn">Working tree not committed</span>
-          <span class="pill info">Generated 2026-06-17 03:26 UTC</span>
+          <span class="pill good">Report generator: implemented</span>
+          <span class="pill info">Updated 2026-06-18 01:24 UTC</span>
         </div>
         <h1>MemSWE / PAP-membench benchmark status</h1>
         <p class="subtitle">Consolidated status of the pi-memswe fixed runtime/harness fork: current faux-provider smoke commands, guarded MiniMax real-model plumbing checks, all-task suite loop, condition scaffold, artifacts, and next steps without overclaiming benchmark performance.</p>
@@ -271,11 +271,11 @@
       <aside class="stamp">
         <div>
           <strong>Current local harness commit</strong>
-          <pre>4854e7a9 feat(coding-agent): scaffold memswe memory conditions</pre>
+          <pre>3bc74d7c feat(coding-agent): add memswe run report generator</pre>
         </div>
         <div>
           <p>Branch state before this docs pass:</p>
-          <code>main...origin/main with one pre-existing script modification</code>
+          <code>main...origin/main, clean</code>
         </div>
       </aside>
     </header>
@@ -327,6 +327,10 @@
             <strong>Condition scaffold</strong>
             <span><code>--condition=no_memory</code> is the verified default. <code>repository_docs</code> currently materializes remembered facts into project docs and records a condition artifact, but remains harness plumbing rather than a completed benchmark baseline. <code>full_context</code> and <code>hindsight</code> fail closed in <code>memswe:smoke</code>; the separate <code>memswe:hindsight-smoke</code> command is a real local AMS/API probe.</span>
           </div>
+          <div class="event">
+            <strong>Static report generator</strong>
+            <span><code>packages/coding-agent/scripts/memswe-report-generator.ts</code> aggregates ignored <code>.memswe-runs/**</code> artifacts into browsable static reports at <code>.memswe-runs/reports/latest/index.html</code> and machine-readable summaries at <code>.memswe-runs/reports/latest/run-summary.json</code>.</span>
+          </div>
         </div>
       </article>
 
@@ -337,8 +341,8 @@
           <tbody>
             <tr>
               <td><code>pi-memswe</code></td>
-              <td><span class="status-warn">modified</span></td>
-              <td>Current branch tracks <code>origin/main</code>. Latest local commit is <code>4854e7a9</code>. Before this docs pass, one script file was already modified; this status page and READMEs are additional uncommitted docs changes.</td>
+              <td><span class="status-good">baseline clean</span></td>
+              <td>Current branch tracks <code>origin/main</code>. Latest baseline commit is <code>3bc74d7c</code>. The repository was clean before this documentation refresh.</td>
             </tr>
             <tr>
               <td><code>memswe</code></td>
@@ -363,6 +367,7 @@
       <p>Representative commands run from <code>pi-memswe</code>. The first two use only the faux provider and harness-side verifiers; the MiniMax command is a separate guarded provider-plumbing smoke:</p>
       <pre>npm --prefix packages/coding-agent run memswe:smoke
 npm --prefix packages/coding-agent run memswe:smoke -- --all-tasks --continue-on-task-failure
+npm --prefix packages/coding-agent run memswe:report
 MEMSWE_ALLOW_REAL_MODEL=1 MINIMAX_API_KEY=&lt;redacted&gt; npm --prefix packages/coding-agent run memswe:smoke -- --task-id=repo-gamma-invoice-export-001 --condition=no_memory --agent-mode=minimax-real
 cd packages/coding-agent &amp;&amp; node ../../node_modules/vitest/dist/cli.js --run test/suite/memswe-smoke-runner.test.ts
 npm run check</pre>
@@ -382,6 +387,7 @@ npm run check</pre>
           <h3>Validation commands</h3>
           <ul>
             <li><code>cd packages/coding-agent &amp;&amp; node ../../node_modules/vitest/dist/cli.js --run test/suite/memswe-smoke-runner.test.ts</code></li>
+            <li><code>npm --prefix packages/coding-agent run memswe:report</code></li>
             <li><code>npm run check</code> from repo root.</li>
             <li>All-task smoke is expected to exit nonzero when non-gamma faux/no-edit tasks fail verification; use <code>--continue-on-task-failure</code> to collect <code>suite-summary.json</code>.</li>
           </ul>
@@ -395,7 +401,11 @@ pi-memswe/.memswe-runs/2026-06-16T23-29-10-817Z/repo-gamma-invoice-export-001/co
 pi-memswe/.memswe-runs/2026-06-16T23-29-10-817Z/repo-gamma-invoice-export-001/repository-docs/memswe-facts.md
 pi-memswe/.memswe-runs/&lt;timestamp&gt;/&lt;task-id&gt;/agent.patch
 pi-memswe/.memswe-runs/&lt;timestamp&gt;/&lt;task-id&gt;/worktree-diff.patch
-pi-memswe/.memswe-runs/&lt;timestamp&gt;/&lt;task-id&gt;/changed-files.json</pre>
+pi-memswe/.memswe-runs/&lt;timestamp&gt;/&lt;task-id&gt;/changed-files.json
+pi-memswe/.memswe-runs/reports/latest/index.html
+pi-memswe/.memswe-runs/reports/latest/run-summary.json
+pi-memswe/.memswe-runs/reports/&lt;timestamp&gt;/index.html
+pi-memswe/.memswe-runs/reports/&lt;timestamp&gt;/run-summary.json</pre>
     </section>
 
     <section class="grid two">
@@ -486,7 +496,7 @@ pi-memswe/.memswe-runs/&lt;timestamp&gt;/&lt;task-id&gt;/changed-files.json</pre
         <div>
           <h3>Benchmark gaps</h3>
           <ul>
-            <li>Need stronger aggregation across task, condition, model, and repetition.</li>
+            <li>Existing static report generator needs richer per-condition/task/model/repetition views aligned with MemSWE measurement docs.</li>
             <li>Need real patch capture and diff constraints for agent runs.</li>
             <li>Need normalized memory trace JSONL for retrieval/write/delete events.</li>
             <li>Need provider adapter contract implemented in <code>pi-memswe</code>.</li>
@@ -508,7 +518,7 @@ pi-memswe/.memswe-runs/&lt;timestamp&gt;/&lt;task-id&gt;/changed-files.json</pre
         <li><strong>Make trace predicates evaluable.</strong> Connect predicate checks to retrieved memories, injected content, tool arguments, final response, and code diffs.</li>
         <li><strong>Hindsight pilot spike.</strong> Use <code>npm --prefix packages/coding-agent run memswe:hindsight-smoke</code> only after explicit token/API approval. It creates/resets a smoke bank, seeds task-YAML-derived gamma facts, runs retain/recall/delete against local Hindsight, and records provider-facing request/response traces and failure guidance.</li>
         <li><strong>Real model / MiniMax pilot.</strong> Requires explicit API token approval plus complete local artifact/trace readiness; do not use this smoke path for unapproved provider calls.</li>
-        <li><strong>Aggregate reporting.</strong> Add a report builder over <code>.memswe-runs/</code> that produces per-condition/task/model/repetition summaries aligned with MemSWE measurement docs.</li>
+        <li><strong>Extend aggregate reporting.</strong> Build on the existing report generator so reports expose per-condition/task/model/repetition summaries aligned with MemSWE measurement docs.</li>
       </ol>
     </section>
 
@@ -517,6 +527,7 @@ pi-memswe/.memswe-runs/&lt;timestamp&gt;/&lt;task-id&gt;/changed-files.json</pre
       <pre># from pi-memswe
 npm --prefix packages/coding-agent run memswe:smoke
 npm --prefix packages/coding-agent run memswe:smoke -- --condition=no_memory
+npm --prefix packages/coding-agent run memswe:report
 
 # targeted helper/runner tests
 cd packages/coding-agent

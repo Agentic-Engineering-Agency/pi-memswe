@@ -2,6 +2,10 @@
 
 This note maps MemoryBench concepts into MemSWE/pi-memswe for Eduardo's PAP-membench thesis work. It is intentionally design-only: coding benchmarks need a different pipeline than conversational QA, and implementation should start with traceable harness surfaces rather than speculative provider code.
 
+## Current implementation note
+
+This document is the original adaptation design. Current implemented smoke/report surfaces are documented in `packages/coding-agent/README.md` and `packages/coding-agent/docs/memswe-benchmark-status.html`. As of `3bc74d7c`, `memswe:smoke` emits smoke artifacts/run records and `memswe:report` aggregates ignored `.memswe-runs/**` artifacts into static reports.
+
 ## Source references inspected
 
 MemoryBench reference repo (`../memorybench-memswe`):
@@ -318,6 +322,8 @@ The output should align with `../memswe/schema/run-record.schema.json` and `../m
 Do not report a single MemoryBench-style `accuracy` or `MemScore` as the thesis headline. A small diagnostic string may be useful internally, but public ranking should be task success descending then average cost ascending, with independent sortable columns.
 
 ## 8. What to implement first in pi-memswe vs later in memswe
+
+This section is a design/backlog view. Items already partially scaffolded in `pi-memswe` include the smoke runner, artifact/run-record emission, and static report generation; remaining work is to promote those surfaces into full multi-session, per-condition benchmark execution.
 
 ### First in `pi-memswe`
 
