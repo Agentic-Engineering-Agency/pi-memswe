@@ -1,7 +1,7 @@
 #!/usr/bin/env -S npx tsx
 
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type {
@@ -56,7 +56,12 @@ function approxTokens(text: string): number {
 	return Math.ceil(text.length / 4);
 }
 function sanitize(id: string): string {
-	return id.replace(/[^a-zA-Z0-9_.-]/g, "_");
+	// Map any char outside the safe set to "_" — this collapses "/" and "\" so the result is a single
+	// path segment. The remaining traversal risk is a DOTS-ONLY segment ("", ".", ".."), which would
+	// resolve to cwd or indexRoot's PARENT and let reset()/delete() rm -rf OUTSIDE indexRoot — so map
+	// any dots-only id to a safe token.
+	const cleaned = id.replace(/[^a-zA-Z0-9_.-]/g, "_");
+	return /^\.*$/.test(cleaned) ? "_scope_" : cleaned;
 }
 function tokenize(text: string): string[] {
 	return text.toLowerCase().split(/\W+/).filter((t) => t.length > 1);
@@ -106,8 +111,20 @@ export class LocalRagAdapter implements AmsAdapter {
 		this.topK = options.topK ?? DEFAULT_TOP_K;
 	}
 
+	private scopeDir(scope: AdapterScope): string {
+		const dir = join(this.indexRoot, sanitize(scope.id));
+		// Defense-in-depth: the resolved scope dir MUST stay within indexRoot so reset()/delete()
+		// (rm -rf) can never escape it even if sanitize is ever weakened.
+		const root = resolve(this.indexRoot);
+		const resolved = resolve(dir);
+		if (resolved !== root && !resolved.startsWith(root + sep)) {
+			throw new Error(`LocalRagAdapter: scope ${JSON.stringify(scope.id)} escapes indexRoot`);
+		}
+		return dir;
+	}
+
 	private indexPath(scope: AdapterScope): string {
-		return join(this.indexRoot, sanitize(scope.id), "index.json");
+		return join(this.scopeDir(scope), "index.json");
 	}
 
 	private async load(scope: AdapterScope): Promise<IndexFile> {
@@ -125,7 +142,7 @@ export class LocalRagAdapter implements AmsAdapter {
 	async reset(scope: AdapterScope): Promise<NormalizedTrace> {
 		const trace = emptyTrace(scope);
 		await this.capture(trace, "delete", scope, `reset index ${sanitize(scope.id)}`, async () => {
-			await rm(join(this.indexRoot, sanitize(scope.id)), { recursive: true, force: true });
+			await rm(this.scopeDir(scope), { recursive: true, force: true });
 			await this.save(scope, { chunks: [] });
 			return "ok";
 		});
@@ -184,7 +201,7 @@ export class LocalRagAdapter implements AmsAdapter {
 	async delete(scope: AdapterScope): Promise<NormalizedTrace> {
 		const trace = emptyTrace(scope);
 		await this.capture(trace, "delete", scope, `delete index ${sanitize(scope.id)}`, async () => {
-			await rm(join(this.indexRoot, sanitize(scope.id)), { recursive: true, force: true });
+			await rm(this.scopeDir(scope), { recursive: true, force: true });
 			return "ok";
 		});
 		return this.recordTrace(trace);
@@ -236,6 +253,12 @@ export async function runLocalRagLifecycleSmoke(): Promise<LocalRagSmokeResult> 
 	try {
 		await adapter.reset(scope);
 		predicates.reset_completed = true;
+		// Path-traversal guard (review hardening): a pathological scope id must never sanitize to a
+		// dots-only or separator-bearing segment, so reset()/delete() (rm -rf) can never escape indexRoot.
+		predicates.sanitize_blocks_traversal = ["..", ".", "...", "../../etc", "a/../b", "/", ""].every((evil) => {
+			const s = sanitize(evil);
+			return !/^\.*$/.test(s) && !s.includes("/") && !s.includes("\\");
+		});
 		const content = `MemSWE LocalRAG smoke fact ${scope.id}. The lifecycle marker phrase is retain recall delete. Unrelated distractor sentence about caching.`;
 		await adapter.seed([{ scope, operation: "write", content, metadata: { smoke: true } }]);
 		predicates.retain_completed = true;
