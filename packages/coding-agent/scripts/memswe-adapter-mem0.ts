@@ -57,6 +57,7 @@ type Mem0SmokeResult = {
 	created_at: string;
 	api_url: string | null;
 	scope_id: string;
+	status: "passed" | "failed" | "skipped";
 	predicate_results: Record<string, boolean>;
 	settle_ms: number | null;
 	export: AdapterExport | null;
