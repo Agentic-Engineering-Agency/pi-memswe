@@ -307,7 +307,7 @@ export async function runLettaLifecycleSmoke(): Promise<LettaSmokeResult> {
 
 	const adapter = new LettaAdapter({
 		apiUrl,
-		apiKey: process.env.LETTA_API_KEY,
+		apiKey: process.env.LETTA_API_KEY ?? process.env.LETTA_SERVER_PASSWORD,
 		authHeader: process.env.LETTA_AUTH_HEADER,
 		timeoutMs: Number(process.env.LETTA_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS),
 		model: process.env.LETTA_MODEL,
@@ -466,7 +466,7 @@ function skippedSmoke(scope: AdapterScope, message: string, apiUrl: string | nul
 		error: {
 			failed_phase: "preflight",
 			message,
-			guidance: "Start self-hosted Letta, set LETTA_API_URL, and set LETTA_API_KEY or LETTA_AUTH_HEADER when auth is enabled.",
+			guidance: "Start self-hosted Letta, set LETTA_API_URL, and set LETTA_API_KEY (or LETTA_SERVER_PASSWORD) or LETTA_AUTH_HEADER when auth is enabled.",
 		},
 	};
 }
