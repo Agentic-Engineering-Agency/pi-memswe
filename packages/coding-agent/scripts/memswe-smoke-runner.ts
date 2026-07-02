@@ -40,6 +40,8 @@ const MEMSWE_ROOT = resolve(REPO_ROOT, "../memswe");
 const RUNS_ROOT = join(REPO_ROOT, ".memswe-runs");
 const MEMORY_CONDITION_IDS = ["no_memory", "full_context", "repository_docs", "hindsight"] as const;
 const AGENT_MODE_IDS = ["faux-text", "minimax-real", "omniroute-free"] as const;
+const DEFAULT_HINDSIGHT_API_URL = "http://hindsight-server:8888";
+const DEFAULT_HINDSIGHT_BANK_PREFIX = "pap-membench-run";
 
 type VerifierKind = "visible" | "hidden" | "protected";
 type MemoryConditionId = (typeof MEMORY_CONDITION_IDS)[number];
@@ -142,6 +144,38 @@ type ConditionPrepareResult = {
 	condition_id: MemoryConditionId;
 	memory_system: string | null;
 	artifact_paths: Record<string, string>;
+	metric_overrides?: Record<string, number | null | Record<string, number>>;
+};
+
+type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+
+type HindsightTraceEvent = {
+	name: string;
+	method: string;
+	path: string;
+	status: number | null;
+	latency_ms: number;
+	request?: JsonValue;
+	response?: JsonValue;
+	error?: string;
+};
+
+type HindsightConditionArtifact = {
+	schema_version: "memswe-hindsight-condition.v0.1";
+	created_at: string;
+	api_url: string;
+	bank_id: string;
+	status: "passed" | "failed";
+	seeded_fact_count: number;
+	recalled_memory_count: number;
+	injected_memory_path: string;
+	trace: HindsightTraceEvent[];
+	predicate_results: Record<string, boolean>;
+	error?: {
+		failed_phase: string;
+		message: string;
+		guidance: string;
+	};
 };
 
 function getArgumentValue(name: string): string | undefined {
@@ -569,7 +603,267 @@ async function copyVerifierFiles(taskDir: string, workdir: string, task: TaskYam
 	}
 }
 
-async function prepareCondition(conditionId: MemoryConditionId, task: TaskYaml, workdir: string, artifactsDir: string): Promise<ConditionPrepareResult> {
+function sanitizedIdentifier(value: string): string {
+	return value.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 120);
+}
+
+function hindsightHeaders(hasBody: boolean): Record<string, string> {
+	const headers: Record<string, string> = {};
+	if (hasBody) headers["content-type"] = "application/json";
+	const apiKey = process.env.HINDSIGHT_API_KEY;
+	if (apiKey) headers["x-api-key"] = apiKey;
+	const bearer = process.env.HINDSIGHT_AUTH_TOKEN ?? process.env.HINDSIGHT_BEARER_TOKEN;
+	if (bearer) headers.authorization = `Bearer ${bearer}`;
+	return headers;
+}
+
+async function requestHindsightJson(
+	apiUrl: string,
+	method: string,
+	path: string,
+	trace: HindsightTraceEvent[],
+	body?: JsonValue,
+): Promise<{ status: number; json: JsonValue }> {
+	const started = Date.now();
+	const event: HindsightTraceEvent = { name: path, method, path, status: null, latency_ms: 0, request: body };
+	try {
+		const response = await fetch(`${apiUrl}${path}`, {
+			method,
+			headers: hindsightHeaders(body !== undefined),
+			body: body === undefined ? undefined : JSON.stringify(body),
+		});
+		const text = await response.text();
+		let json: JsonValue = null;
+		if (text.length > 0) {
+			try {
+				json = JSON.parse(text) as JsonValue;
+			} catch {
+				json = { raw_text: text };
+			}
+		}
+		event.status = response.status;
+		event.response = json;
+		if (!response.ok) throw new Error(`HTTP ${response.status}: ${text}`);
+		return { status: response.status, json };
+	} catch (caught) {
+		event.error = caught instanceof Error ? caught.message : String(caught);
+		throw caught;
+	} finally {
+		event.latency_ms = Date.now() - started;
+		trace.push(event);
+	}
+}
+
+function memoryTexts(json: JsonValue): string[] {
+	if (!json || typeof json !== "object") return [];
+	if (Array.isArray(json)) return json.flatMap((item) => memoryTexts(item));
+	const direct = ["text", "content", "memory"].flatMap((key) => {
+		const value = json[key];
+		return typeof value === "string" ? [value] : [];
+	});
+	const nested = ["items", "memories", "results", "data"].flatMap((key) => memoryTexts(json[key] ?? null));
+	return [...direct, ...nested].filter((text) => text.length > 0);
+}
+
+async function pollHindsightUntil(
+	apiUrl: string,
+	trace: HindsightTraceEvent[],
+	bankId: string,
+	label: string,
+	predicate: (json: JsonValue) => boolean,
+): Promise<JsonValue> {
+	const deadline = Date.now() + 60_000;
+	let last: JsonValue = null;
+	while (Date.now() < deadline) {
+		const response = await requestHindsightJson(apiUrl, "GET", `/v1/default/banks/${bankId}/memories/list?limit=100`, trace);
+		last = response.json;
+		if (predicate(response.json)) return response.json;
+		await new Promise<void>((resolvePoll) => setTimeout(resolvePoll, 2_000));
+	}
+	throw new Error(`Timed out waiting for ${label}; last=${JSON.stringify(last)}`);
+}
+
+function factMetadata(taskId: string, fact: { id?: string; first_valid_session?: string; invalid_after_session?: string; forget_requested_session?: string; expected_use?: string }): Record<string, string> {
+	const metadata: Record<string, string> = {
+		task_id: taskId,
+		fact_id: fact.id ?? "unknown",
+		scope: "memswe-hindsight-condition",
+	};
+	for (const key of ["first_valid_session", "invalid_after_session", "forget_requested_session", "expected_use"] as const) {
+		const value = fact[key];
+		if (value) metadata[key] = value;
+	}
+	return metadata;
+}
+
+function hindsightFailureGuidance(message: string, failedPhase: string): string {
+	if (message === "fetch failed") {
+		return "Verify HINDSIGHT_API_URL points at a reachable Hindsight API before rerunning.";
+	}
+	if (failedPhase.includes("/memories")) {
+		return "Retain/recall reached Hindsight but failed. Verify the scoped API key and any configured Hindsight LLM provider/cost approval before rerunning.";
+	}
+	if (failedPhase.includes("/banks/")) {
+		return "Bank reset/create/delete did not complete. Fail closed and inspect Hindsight state before rerunning to avoid dirty-bank leakage.";
+	}
+	return "Inspect the Hindsight condition trace before rerunning; do not promote this artifact as benchmark-result evidence.";
+}
+
+function failedHindsightPhase(trace: HindsightTraceEvent[]): string {
+	const lastError = [...trace].reverse().find((event) => event.error);
+	if (lastError) return `${lastError.method} ${lastError.path}`;
+	const last = trace.at(-1);
+	return last ? `${last.method} ${last.path}` : "preflight";
+}
+
+function hindsightRecallMarkdown(taskId: string, bankId: string, recalledTexts: string[]): string {
+	return `${[
+		"# Hindsight Retrieved Memory",
+		"",
+		`Task: ${taskId}`,
+		"Condition: hindsight",
+		`Bank: ${bankId}`,
+		"",
+		"These facts were retrieved from the scoped Hindsight bank before the graded session prompt.",
+		"",
+		"## Recalled facts",
+		"",
+		...(recalledTexts.length === 0 ? ["- <no recalled facts>"] : recalledTexts.map((text) => `- ${text}`)),
+	].join("\n")}\n`;
+}
+
+async function prepareHindsightCondition(task: TaskYaml, workdir: string, artifactsDir: string, runId: string): Promise<ConditionPrepareResult> {
+	const conditionResultPath = join(artifactsDir, "condition-result.json");
+	const conditionArtifactPath = join(artifactsDir, "hindsight-condition.json");
+	const injectedMemoryPath = join(workdir, "docs/agent-project-memory/hindsight-recall.md");
+	const injectedMemoryArtifactPath = join(artifactsDir, "hindsight-recall.md");
+	const trace: HindsightTraceEvent[] = [];
+	const predicateResults: Record<string, boolean> = {};
+	const taskId = task.harbor?.metadata?.task_id ?? DEFAULT_TASK_ID;
+	const gradedSession = resolveGradedSession(task);
+	const facts = validFactsBeforeSession(task, gradedSession.session_id!);
+	const apiUrl = (process.env.HINDSIGHT_API_URL ?? DEFAULT_HINDSIGHT_API_URL).replace(/\/+$/, "");
+	const bankPrefix = sanitizedIdentifier(process.env.HINDSIGHT_BANK_PREFIX ?? DEFAULT_HINDSIGHT_BANK_PREFIX);
+	const bankId = sanitizedIdentifier(process.env.HINDSIGHT_BANK_ID ?? `${bankPrefix}-${taskId}-${runId}`);
+	const started = Date.now();
+	let artifact: HindsightConditionArtifact;
+
+	try {
+		await requestHindsightJson(apiUrl, "GET", "/health", trace);
+		await requestHindsightJson(apiUrl, "DELETE", `/v1/default/banks/${bankId}`, trace);
+		await requestHindsightJson(apiUrl, "PUT", `/v1/default/banks/${bankId}`, trace, {
+			name: `MemSWE ${taskId} Hindsight condition canary`,
+			retain_mission: "Retain only durable MemSWE task facts that are valid before the graded session.",
+			reflect_mission: "Recall MemSWE task facts for benchmark harness validation.",
+		});
+		await requestHindsightJson(apiUrl, "POST", `/v1/default/banks/${bankId}/memories`, trace, {
+			async: false,
+			items: facts.map((fact) => ({
+				content: fact.text ?? "",
+				context: `MemSWE ${taskId} seeded fact ${fact.id ?? "unknown"} before session ${gradedSession.session_id}`,
+				document_id: `memswe-${taskId}-${fact.id ?? "unknown"}`,
+				tags: ["memswe", taskId, fact.id ?? "unknown"],
+				metadata: factMetadata(taskId, fact),
+			})),
+		});
+		const listed = await pollHindsightUntil(
+			apiUrl,
+			trace,
+			bankId,
+			"seeded valid facts",
+			(json) => memoryTexts(json).length >= facts.filter((fact) => fact.text).length,
+		);
+		const listedTexts = memoryTexts(listed);
+		predicateResults.retain_visible = listedTexts.length > 0;
+		const recall = await requestHindsightJson(apiUrl, "POST", `/v1/default/banks/${bankId}/memories/recall`, trace, {
+			query: "What durable task facts are relevant to the gamma invoice CSV export implementation?",
+			budget: "mid",
+			max_tokens: 1024,
+			trace: true,
+			tags: ["memswe", taskId],
+			tags_match: "all_strict",
+		});
+		const recalledTexts = memoryTexts(recall.json);
+		predicateResults.recall_returned_memory = recalledTexts.length > 0;
+		const markdown = hindsightRecallMarkdown(taskId, bankId, recalledTexts.length > 0 ? recalledTexts : listedTexts);
+		await mkdir(dirname(injectedMemoryPath), { recursive: true });
+		await mkdir(dirname(injectedMemoryArtifactPath), { recursive: true });
+		await writeFile(injectedMemoryPath, markdown);
+		await writeFile(injectedMemoryArtifactPath, markdown);
+		await requestHindsightJson(apiUrl, "DELETE", `/v1/default/banks/${bankId}/memories`, trace);
+		const afterDelete = await pollHindsightUntil(apiUrl, trace, bankId, "deleted memories", (json) => memoryTexts(json).length === 0);
+		predicateResults.delete_cleared_bank = memoryTexts(afterDelete).length === 0;
+		await requestHindsightJson(apiUrl, "DELETE", `/v1/default/banks/${bankId}`, trace);
+
+		artifact = {
+			schema_version: "memswe-hindsight-condition.v0.1",
+			created_at: new Date().toISOString(),
+			api_url: apiUrl,
+			bank_id: bankId,
+			status: Object.values(predicateResults).every(Boolean) ? "passed" : "failed",
+			seeded_fact_count: facts.filter((fact) => fact.text).length,
+			recalled_memory_count: recalledTexts.length,
+			injected_memory_path: injectedMemoryArtifactPath,
+			trace,
+			predicate_results: predicateResults,
+		};
+	} catch (caught) {
+		const message = caught instanceof Error ? caught.message : String(caught);
+		const phase = failedHindsightPhase(trace);
+		artifact = {
+			schema_version: "memswe-hindsight-condition.v0.1",
+			created_at: new Date().toISOString(),
+			api_url: apiUrl,
+			bank_id: bankId,
+			status: "failed",
+			seeded_fact_count: facts.filter((fact) => fact.text).length,
+			recalled_memory_count: 0,
+			injected_memory_path: injectedMemoryArtifactPath,
+			trace,
+			predicate_results: predicateResults,
+			error: {
+				failed_phase: phase,
+				message,
+				guidance: hindsightFailureGuidance(message, phase),
+			},
+		};
+		await writeFile(conditionArtifactPath, `${JSON.stringify(artifact, null, "	")}\n`);
+		throw new Error(`Hindsight condition preparation failed at ${phase}: ${message}`);
+	}
+
+	await writeFile(conditionArtifactPath, `${JSON.stringify(artifact, null, "	")}\n`);
+	if (artifact.status !== "passed") {
+		throw new Error(`Hindsight condition predicates did not pass: ${JSON.stringify(artifact.predicate_results)}`);
+	}
+	const result: ConditionPrepareResult = {
+		condition_id: "hindsight",
+		memory_system: "hindsight",
+		artifact_paths: {
+			condition_result: conditionResultPath,
+			hindsight_condition: conditionArtifactPath,
+			hindsight_recall: injectedMemoryArtifactPath,
+		},
+		metric_overrides: {
+			memory_retrieval_latency_p50_ms: trace.filter((event) => event.path.includes("/recall")).at(0)?.latency_ms ?? null,
+			memory_retrieval_latency_p95_ms: trace.filter((event) => event.path.includes("/recall")).at(0)?.latency_ms ?? null,
+			memory_consolidation_settle_time_ms: Date.now() - started,
+			memory_operation_tool_calls_by_type: {
+				retain: trace.filter((event) => event.method === "POST" && event.path.endsWith("/memories")).length,
+				recall: trace.filter((event) => event.path.includes("/recall")).length,
+				delete: trace.filter((event) => event.method === "DELETE").length,
+				list: trace.filter((event) => event.method === "GET" && event.path.includes("/memories/list")).length,
+			},
+			injected_memory_tokens: Math.ceil((await readFile(injectedMemoryArtifactPath, "utf8")).split(/\s+/).filter(Boolean).length * 1.3),
+		},
+	};
+	await writeFile(conditionResultPath, `${JSON.stringify(result, null, "	")}\n`);
+	return result;
+}
+
+async function prepareCondition(conditionId: MemoryConditionId, task: TaskYaml, workdir: string, artifactsDir: string, runId: string): Promise<ConditionPrepareResult> {
+	if (conditionId === "hindsight") {
+		return prepareHindsightCondition(task, workdir, artifactsDir, runId);
+	}
 	if (conditionId !== "no_memory" && conditionId !== "repository_docs") {
 		throw new Error(`Memory condition ${conditionId} is not implemented`);
 	}
@@ -637,7 +931,7 @@ async function runTask(
 	await copyVerifierFiles(taskDir, workdir, parsed, includeHidden);
 	await mkdir(artifactsDir, { recursive: true });
 	const memorySpan = trace.startSpan("memory", "memory.prepare", { condition_id: conditionId });
-	const conditionResult = await prepareCondition(conditionId, parsed, repoDir, artifactsDir);
+	const conditionResult = await prepareCondition(conditionId, parsed, repoDir, artifactsDir, runId);
 	memorySpan.end();
 	await initializeWorktreeBaseline(repoDir);
 
@@ -752,6 +1046,17 @@ async function runTask(
 			leakage_count: null,
 			repeated_failed_action_count: null,
 			trace_coverage: trace.enabled ? traceCompleteness.traceCoverage : null,
+			...(conditionId === "hindsight"
+				? {
+						per_task_cost_usd: null,
+						total_tokens: null,
+						input_tokens: null,
+						output_tokens: null,
+						memory_operation_tool_call_share: null,
+						injected_memory_token_share: null,
+					}
+				: {}),
+			...(conditionResult.metric_overrides ?? {}),
 		},
 		trace_predicate_results: [
 			...(parsed.memswe?.trace_predicates ?? []).map((predicate) => ({
