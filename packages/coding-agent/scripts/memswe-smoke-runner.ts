@@ -39,7 +39,7 @@ const REPO_ROOT = resolve(SCRIPT_DIR, "../../..");
 const MEMSWE_ROOT = resolve(REPO_ROOT, "../memswe");
 const RUNS_ROOT = join(REPO_ROOT, ".memswe-runs");
 const MEMORY_CONDITION_IDS = ["no_memory", "full_context", "repository_docs", "hindsight"] as const;
-const AGENT_MODE_IDS = ["faux-text", "minimax-real", "omniroute-free"] as const;
+const AGENT_MODE_IDS = ["faux-text", "minimax-real", "omniroute-free", "openrouter-free"] as const;
 const DEFAULT_HINDSIGHT_API_URL = "http://hindsight-server:8888";
 const DEFAULT_HINDSIGHT_BANK_PREFIX = "pap-membench-run";
 
@@ -525,9 +525,72 @@ async function runOmnirouteAgentSession(task: TaskYaml, taskDir: string, workdir
 	};
 }
 
+async function runOpenRouterAgentSession(task: TaskYaml, taskDir: string, workdir: string, artifactsDir: string): Promise<AgentRunResult> {
+	const gradedSession = resolveGradedSession(task);
+	const prompt = await readFile(join(taskDir, gradedSession.prompt_ref!), "utf8");
+	if (process.env.MEMSWE_ALLOW_REAL_MODEL !== "1") {
+		throw new Error("--agent-mode=openrouter-free requires MEMSWE_ALLOW_REAL_MODEL=1 to confirm intentional real-model spend.");
+	}
+	const apiKey = process.env.OPENROUTER_API_KEY;
+	if (!apiKey) {
+		throw new Error("--agent-mode=openrouter-free requires OPENROUTER_API_KEY in the environment.");
+	}
+	const baseUrl = "https://openrouter.ai/api/v1";
+	const model = process.env.OPENROUTER_MODEL;
+	if (!model) {
+		throw new Error("OPENROUTER_MODEL env required (no auto/free model in OpenRouter catalog).");
+	}
+
+	let status: AgentRunResult["status"] = "completed";
+	let error: string | null = null;
+	let finalResponse = "";
+	const events: unknown[] = [];
+	const messages: Array<{ role: string; content: string }> = [{ role: "user", content: prompt }];
+	try {
+		const response = await fetch(`${baseUrl}/chat/completions`, {
+			method: "POST",
+			headers: {
+				"content-type": "application/json",
+				authorization: `Bearer ${apiKey}`,
+			},
+			body: JSON.stringify({ model, messages, tools: [] }),
+		});
+		if (!response.ok) {
+			throw new Error(`openrouter chat completions request failed with ${response.status}: ${await response.text()}`);
+		}
+		const body = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+		finalResponse = body.choices?.[0]?.message?.content ?? "";
+		messages.push({ role: "assistant", content: finalResponse });
+	} catch (caught) {
+		status = "errored";
+		error = caught instanceof Error ? caught.message : String(caught);
+	} finally {
+		await writeFile(join(artifactsDir, "agent-events.json"), `${JSON.stringify(toJsonSafe(events), null, "	")}\n`);
+		await writeFile(join(artifactsDir, "agent-messages.json"), `${JSON.stringify(toJsonSafe(messages), null, "	")}\n`);
+	}
+
+	await writeFile(join(artifactsDir, "agent-final-response.txt"), `${finalResponse}\n`);
+	return {
+		session_id: gradedSession.session_id!,
+		prompt_ref: gradedSession.prompt_ref!,
+		final_response: finalResponse,
+		event_count: events.length,
+		message_count: messages.length,
+		status,
+		error,
+		agent_mode: "openrouter-free",
+		model_id: model,
+		provider_id: "openrouter",
+		base_url: baseUrl,
+		changedFiles: 0,
+		toolCalls: [],
+	};
+}
+
 async function runAgentSession(agentMode: AgentMode, task: TaskYaml, taskDir: string, workdir: string, artifactsDir: string): Promise<AgentRunResult> {
 	if (agentMode === "minimax-real") return runMinimaxAgentSession(task, taskDir, workdir, artifactsDir);
 	if (agentMode === "omniroute-free") return runOmnirouteAgentSession(task, taskDir, workdir, artifactsDir);
+	if (agentMode === "openrouter-free") return runOpenRouterAgentSession(task, taskDir, workdir, artifactsDir);
 	return runFauxAgentSession(task, taskDir, workdir, artifactsDir);
 }
 

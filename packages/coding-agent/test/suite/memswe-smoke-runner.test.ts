@@ -311,21 +311,27 @@ describe("memswe OTel trace scaffold", () => {
 });
 
 describe("memswe smoke runner task discovery", () => {
-	test("discovers task descriptors sorted by task id", async () => {
-		await expect(discoverTaskIds(MEMSWE_ROOT)).resolves.toEqual([
-			"repo-alpha-convention-newsletter-001",
-			"repo-beta-cache-continuation-001",
-			"repo-delta-billing-url-001",
-			"repo-epsilon-control-001",
-			"repo-epsilon-http-policy-001",
-			"repo-eta-ownership-identification-001",
-			"repo-gamma-invoice-export-001",
-			"repo-iota-abstention-settings-001",
-			"repo-kappa-api-version-freshness-001",
-			"repo-lambda-secret-withholding-001",
-			"repo-theta-dispatch-config-lifecycle-001",
-			"repo-zeta-retry-endpoint-forgetting-001",
-		]);
+	test("discovers only directories with task.yaml, sorted by task id", async () => {
+		const root = await mkdtemp(join(tmpdir(), "memswe-discover-test-"));
+		try {
+			const tasksRoot = join(root, "tasks");
+			await mkdir(join(tasksRoot, "repo-zeta-001"), { recursive: true });
+			await writeFile(join(tasksRoot, "repo-zeta-001", "task.yaml"), "id: repo-zeta-001\n");
+			await mkdir(join(tasksRoot, "repo-alpha-001"), { recursive: true });
+			await writeFile(join(tasksRoot, "repo-alpha-001", "task.yaml"), "id: repo-alpha-001\n");
+			await mkdir(join(tasksRoot, "no-descriptor"), { recursive: true });
+			await writeFile(join(tasksRoot, "README.md"), "not a task\n");
+			await expect(discoverTaskIds(root)).resolves.toEqual(["repo-alpha-001", "repo-zeta-001"]);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test("discovers the live memswe catalog non-empty and sorted", async () => {
+		const taskIds = await discoverTaskIds(MEMSWE_ROOT);
+		expect(taskIds.length).toBeGreaterThan(0);
+		expect(taskIds).toEqual([...taskIds].sort());
+		expect(new Set(taskIds).size).toBe(taskIds.length);
 	});
 });
 
