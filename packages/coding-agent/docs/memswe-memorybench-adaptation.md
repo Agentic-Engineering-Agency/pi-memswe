@@ -6,6 +6,8 @@ This note maps MemoryBench concepts into MemSWE/pi-memswe for Eduardo's PAP-memb
 
 This document is the original adaptation design. Current implemented smoke/report surfaces are documented in `packages/coding-agent/README.md` and `packages/coding-agent/docs/memswe-benchmark-status.html`. As of `3bc74d7c`, `memswe:smoke` emits smoke artifacts/run records and `memswe:report` aggregates ignored `.memswe-runs/**` artifacts into static reports.
 
+Since then, the harness has grown: OTLP trace export to Langfuse is default-on (env-gated via `LANGFUSE_OTLP_ENDPOINT`/`LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY`, see `README.md`'s "Observability & model gateway" section); `hindsight` is the first real AMS target with a dedicated smoke script (`memswe:hindsight-smoke`); and the shared `AmsAdapter` contract (`memswe-adapter-contract.ts`) now has implementations for `graphiti`, `letta`, `mem0`, `supermemory`, and `localrag` (BM25 baseline), each with its own env-gated lifecycle-smoke script that skips rather than fails when unconfigured. omniroute is the intended model gateway for future real-model runs; the `--agent-mode=omniroute` selector itself has not landed yet.
+
 ## Source references inspected
 
 MemoryBench reference repo (`../memorybench-memswe`):

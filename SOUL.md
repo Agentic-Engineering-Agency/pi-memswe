@@ -89,9 +89,13 @@ Treat `hindsight` as the first real AMS target, but only after local adapter smo
 - delete/forget behavior;
 - trace export with provider IDs and latencies.
 
-Treat `filesystem` and `rag` from MemoryBench as useful baseline patterns, not already-canonical MemSWE conditions.
+Treat `filesystem` and `rag` from MemoryBench as useful baseline patterns, not already-canonical MemSWE conditions; `localrag` (BM25) is now a real MemSWE baseline adapter (`memswe-adapter-localrag.ts`), not just a MemoryBench pattern.
 
-Treat `supermemory`, `mem0`, and `zep` as external-service candidates requiring keys/service setup and explicit inclusion.
+Treat `graphiti`, `letta`, `supermemory`, `mem0`, and `zep` as external-service AMS candidates requiring keys/service setup and explicit inclusion; each has a lifecycle-smoke adapter under `packages/coding-agent/scripts/memswe-adapter-*.ts` that skips (not fails) when unconfigured.
+
+## Model gateway
+
+omniroute is the preferred model gateway for real (non-faux) agent runs going forward, once wired in. A dedicated `--agent-mode=omniroute` selector for the smoke runner is planned but not yet implemented; until it lands, real-model smoke stays on `--agent-mode=minimax-real` (gated behind `MEMSWE_ALLOW_REAL_MODEL=1`), and `faux-text` remains the default for all deterministic/CI smoke work. Do not treat omniroute as available until the flag exists and is exercised end-to-end.
 
 ## Evidence standard
 

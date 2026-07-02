@@ -36,6 +36,14 @@ npm --prefix packages/coding-agent run memswe:report
 
 The smoke runner uses the deterministic faux provider and does not call real model/provider APIs. It copies MemSWE fixtures into temporary worktrees, keeps hidden/protected verifier assets harness-side, emits artifacts under `.memswe-runs/<timestamp>/<task-id>/`, and writes `suite-summary.json` for all-task runs. `memswe:report` aggregates ignored run artifacts into `.memswe-runs/reports/latest/index.html` and `.memswe-runs/reports/latest/run-summary.json`. See [packages/coding-agent/README.md](packages/coding-agent/README.md#memswe--pap-membench-harness) and [packages/coding-agent/docs/memswe-benchmark-status.html](packages/coding-agent/docs/memswe-benchmark-status.html) for current command, artifact, and readiness details.
 
+### Observability & model gateway
+
+Trace export to Langfuse via OTLP/HTTP JSON has been default-on since [#9](https://github.com/Agentic-Engineering-Agency/pi-memswe/pull/9); `memswe-trace-scaffold.ts`'s `resolveMemSweOtlpExporterConfig` resolves the endpoint from `LANGFUSE_OTLP_ENDPOINT` (falling back to `OTEL_EXPORTER_OTLP_ENDPOINT`), and export runs under `--otel-trace`. Set `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` alongside the endpoint when pointing at a real Langfuse project. Secret-shaped env names (matching `langfuse`, `otel_exporter`, `key`, `token`, etc.) are scrubbed from verifier `setup_command` environments before task execution.
+
+`hindsight` is the harness's first real AMS (agentic memory system) target — see `packages/coding-agent/scripts/memswe-hindsight-smoke.ts` (`npm --prefix packages/coding-agent run memswe:hindsight-smoke`) and `SOUL.md`'s Memory conditions section for the adapter-readiness bar it must clear before promotion out of smoke-only status.
+
+omniroute is the preferred model gateway going forward; a dedicated `--agent-mode=omniroute` (or `auto-free`-style) selector for `memswe-smoke-runner.ts` is planned but not yet implemented — current `--agent-mode` values remain `faux-text` (default, deterministic) and `minimax-real` (gated behind `MEMSWE_ALLOW_REAL_MODEL=1`).
+
 * **[@earendil-works/pi-coding-agent](packages/coding-agent)**: Interactive coding agent CLI
 * **[@earendil-works/pi-agent-core](packages/agent)**: Agent runtime with tool calling and state management
 * **[@earendil-works/pi-ai](packages/ai)**: Unified multi-provider LLM API (OpenAI, Anthropic, Google, …)
