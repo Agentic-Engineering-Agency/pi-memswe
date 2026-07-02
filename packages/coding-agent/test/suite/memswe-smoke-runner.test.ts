@@ -2,8 +2,10 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { parse } from "yaml";
+import { summarizeRunRecordForReport } from "../../scripts/memswe-report-generator.ts";
+import { classifyPrimaryFailureCategory, resolveRunSessionId, scoreReward } from "../../scripts/memswe-smoke-runner.ts";
 import {
 	discoverTaskIds,
 	inferVerifierAssets,
@@ -20,12 +22,6 @@ import {
 	memoryLatencySummary,
 	traceCompletenessSummary,
 } from "../../scripts/memswe-trace-scaffold.ts";
-import {
-	classifyPrimaryFailureCategory,
-	resolveRunSessionId,
-	scoreReward,
-} from "../../scripts/memswe-smoke-runner.ts";
-import { summarizeRunRecordForReport } from "../../scripts/memswe-report-generator.ts";
 
 const CODING_AGENT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const PI_ROOT = resolve(CODING_AGENT_ROOT, "../..");
@@ -35,10 +31,15 @@ describe("memswe smoke runner Python environment", () => {
 	test("creates an isolated venv and runs setup commands inside it", async () => {
 		const workdir = await mkdtemp(join(tmpdir(), "memswe-env-test-"));
 		try {
-			const env = await preparePythonEnvironment(
-				workdir,
-				"python -c 'import pathlib, sys; pathlib.Path(\"venv-prefix.txt\").write_text(sys.prefix)'",
-			);
+			const task: TaskYaml = {
+				harbor: {
+					environment: {
+						setup_command:
+							"python -c 'import pathlib, sys; pathlib.Path(\"venv-prefix.txt\").write_text(sys.prefix)'",
+					},
+				},
+			};
+			const env = await preparePythonEnvironment(workdir, task);
 			const prefix = await readFile(join(workdir, "venv-prefix.txt"), "utf8");
 
 			expect(prefix).toContain(".memswe-venv");
@@ -224,6 +225,7 @@ describe("memswe OTel trace scaffold", () => {
 		trace.startSpan("scoring", "scoring.reward", { reward_evaluable: true }, 1000).end(1040);
 
 		const artifact = trace.toArtifact();
+		if (!artifact.enabled) throw new Error("Expected enabled trace artifact");
 
 		expect(artifact.trace_id).toBe("memswe-smoke-task-2026");
 		expect(artifact.trace_store_ref).toBe("memswe-trace://memswe-smoke-task-2026");
@@ -237,6 +239,75 @@ describe("memswe OTel trace scaffold", () => {
 		});
 		expect(memoryLatencySummary(artifact)).toEqual({ p50_ms: 20, p95_ms: 20 });
 	});
+
+	test("adds Langfuse Basic auth to OTLP exports", async () => {
+		const originalFetch = globalThis.fetch;
+		const originalLangfuseEndpoint = process.env.LANGFUSE_OTLP_ENDPOINT;
+		const originalOtelEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+		const originalPublicKey = process.env.LANGFUSE_PUBLIC_KEY;
+		const originalSecretKey = process.env.LANGFUSE_SECRET_KEY;
+		const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
+
+		process.env.LANGFUSE_OTLP_ENDPOINT = "https://cloud.langfuse.com/api/public/otel";
+		delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+		process.env.LANGFUSE_PUBLIC_KEY = "pk-test";
+		process.env.LANGFUSE_SECRET_KEY = "sk-test";
+		globalThis.fetch = fetchMock;
+
+		try {
+			const trace = createEnabledMemSweTrace("run-auth", 1000);
+			trace.startSpan("benchmark", "benchmark.run", {}, 1000).end(1010);
+
+			await trace.flush();
+
+			const firstCall = (fetchMock.mock.calls as unknown as Array<[string, RequestInit]>)[0];
+			if (!firstCall) throw new Error("Expected OTLP fetch call");
+			expect(firstCall[0]).toBe("https://cloud.langfuse.com/api/public/otel/v1/traces");
+			expect((firstCall[1] as RequestInit).headers).toEqual({
+				authorization: `Basic ${Buffer.from("pk-test:sk-test").toString("base64")}`,
+				"content-type": "application/json",
+				"memswe-otlp-endpoint-source": "LANGFUSE_OTLP_ENDPOINT",
+			});
+			const artifact = trace.toArtifact();
+			if (!artifact.enabled) throw new Error("Expected enabled trace artifact");
+			expect(artifact.trace_store_ref).toBe("memswe-trace://run-auth");
+		} finally {
+			globalThis.fetch = originalFetch;
+			restoreEnv("LANGFUSE_OTLP_ENDPOINT", originalLangfuseEndpoint);
+			restoreEnv("OTEL_EXPORTER_OTLP_ENDPOINT", originalOtelEndpoint);
+			restoreEnv("LANGFUSE_PUBLIC_KEY", originalPublicKey);
+			restoreEnv("LANGFUSE_SECRET_KEY", originalSecretKey);
+		}
+	});
+
+	test("skips OTLP export when endpoint env is unset", async () => {
+		const originalFetch = globalThis.fetch;
+		const originalLangfuseEndpoint = process.env.LANGFUSE_OTLP_ENDPOINT;
+		const originalOtelEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+		const originalPublicKey = process.env.LANGFUSE_PUBLIC_KEY;
+		const originalSecretKey = process.env.LANGFUSE_SECRET_KEY;
+		const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
+
+		delete process.env.LANGFUSE_OTLP_ENDPOINT;
+		delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+		process.env.LANGFUSE_PUBLIC_KEY = "pk-test";
+		process.env.LANGFUSE_SECRET_KEY = "sk-test";
+		globalThis.fetch = fetchMock;
+
+		try {
+			const trace = createEnabledMemSweTrace("run-no-endpoint", 1000);
+			trace.startSpan("benchmark", "benchmark.run", {}, 1000).end(1010);
+
+			await expect(trace.flush()).resolves.toEqual({ status: "skipped", reason: "endpoint_unset" });
+			expect(fetchMock).not.toHaveBeenCalled();
+		} finally {
+			globalThis.fetch = originalFetch;
+			restoreEnv("LANGFUSE_OTLP_ENDPOINT", originalLangfuseEndpoint);
+			restoreEnv("OTEL_EXPORTER_OTLP_ENDPOINT", originalOtelEndpoint);
+			restoreEnv("LANGFUSE_PUBLIC_KEY", originalPublicKey);
+			restoreEnv("LANGFUSE_SECRET_KEY", originalSecretKey);
+		}
+	});
 });
 
 describe("memswe smoke runner task discovery", () => {
@@ -247,11 +318,24 @@ describe("memswe smoke runner task discovery", () => {
 			"repo-delta-billing-url-001",
 			"repo-epsilon-control-001",
 			"repo-epsilon-http-policy-001",
+			"repo-eta-ownership-identification-001",
 			"repo-gamma-invoice-export-001",
+			"repo-iota-abstention-settings-001",
+			"repo-kappa-api-version-freshness-001",
+			"repo-lambda-secret-withholding-001",
+			"repo-theta-dispatch-config-lifecycle-001",
 			"repo-zeta-retry-endpoint-forgetting-001",
 		]);
 	});
 });
+
+function restoreEnv(key: string, value: string | undefined): void {
+	if (value === undefined) {
+		delete process.env[key];
+		return;
+	}
+	process.env[key] = value;
+}
 
 function validRunRecord(): {
 	schema_version: string;

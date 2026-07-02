@@ -2,6 +2,7 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 import type {
@@ -25,6 +26,9 @@ const DEFAULT_API_URL = "http://127.0.0.1:8283/v1";
 const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_MODEL = "openai/gpt-4o-mini";
 const DEFAULT_EMBEDDING = "openai/text-embedding-3-small";
+// Letta embeds each archival passage on write; recall is usually prompt-sync but poll to absorb latency.
+const DEFAULT_RECALL_TIMEOUT_MS = 15_000;
+const DEFAULT_RECALL_POLL_MS = 1_000;
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
@@ -58,6 +62,10 @@ type LettaSmokeResult = {
 	scope_id: string;
 	status: "passed" | "failed" | "skipped";
 	predicate_results: Record<string, boolean>;
+	settle_ms: number | null;
+	agent_id: string | null;
+	// Model/embedding are an experimental variable for Letta → recorded in the artifact (acceptance criterion).
+	metadata: { model: string; embedding: string };
 	export: AdapterExport | null;
 	error?: {
 		failed_phase: string;
@@ -204,6 +212,19 @@ export class LettaAdapter implements AmsAdapter {
 		};
 	}
 
+	/** Configured model/embedding (the Letta experimental variable) — recorded in smoke artifact metadata. */
+	get modelName(): string {
+		return this.model;
+	}
+	get embeddingName(): string {
+		return this.embedding;
+	}
+
+	/** The Letta agent id currently mapped to a scope (set by reset), if any. */
+	agentIdFor(scope: AdapterScope): string | undefined {
+		return this.agentId(scope);
+	}
+
 	private async captureRequest(trace: NormalizedTrace, options: LettaRequestOptions): Promise<LettaResponse> {
 		const started = Date.now();
 		const event: NormalizedTraceEvent = {
@@ -293,16 +314,28 @@ export async function runLettaLifecycleSmoke(): Promise<LettaSmokeResult> {
 		embedding: process.env.LETTA_EMBEDDING,
 	});
 	const predicates: Record<string, boolean> = {};
+	let settleMs: number | null = null;
+	let agentId: string | null = null;
+	const metadata = { model: adapter.modelName, embedding: adapter.embeddingName };
 	try {
 		await adapter.reset(scope);
 		predicates.reset_completed = true;
+		agentId = adapter.agentIdFor(scope) ?? null;
 		const content = `MemSWE Letta smoke fact ${scope.id}: retain recall delete lifecycle marker.`;
 		await adapter.seed([{ scope, operation: "write", content, metadata: { smoke: true } }]);
 		predicates.retain_completed = true;
-		const retained = await adapter.run({ scope, prompt: `Find lifecycle marker for ${scope.id}` });
-		predicates.recall_after_retain = retained.output.includes(scope.id) && retained.output.includes("lifecycle marker");
+		// Poll archival search until the passage is embedded + searchable; record settle time.
+		const settleStart = Date.now();
+		const retained = await waitForRecall(adapter, scope, `Find lifecycle marker for ${scope.id}`, scope.id, "lifecycle marker");
+		settleMs = retained ? Date.now() - settleStart : null;
+		predicates.recall_after_retain = retained;
+		await adapter.observe();
+		predicates.observe_completed = true;
 		await adapter.delete(scope);
 		predicates.delete_completed = true;
+		// Post-delete miss: the agent + its archival memory are gone, so a search must not surface the marker.
+		// delete() clears the scope→agent map, so address the now-deleted agent explicitly via metadata.
+		predicates.recall_miss_after_delete = await searchMissesAfterDelete(adapter, scope, agentId);
 		const exported = await adapter.export();
 		return {
 			schema_version: "memswe-letta-smoke.v0.1",
@@ -311,6 +344,9 @@ export async function runLettaLifecycleSmoke(): Promise<LettaSmokeResult> {
 			scope_id: scope.id,
 			status: Object.values(predicates).every(Boolean) ? "passed" : "failed",
 			predicate_results: predicates,
+			settle_ms: settleMs,
+			agent_id: agentId,
+			metadata,
 			export: exported,
 		};
 	} catch (caught) {
@@ -324,6 +360,9 @@ export async function runLettaLifecycleSmoke(): Promise<LettaSmokeResult> {
 			scope_id: scope.id,
 			status: "failed",
 			predicate_results: predicates,
+			settle_ms: settleMs,
+			agent_id: agentId,
+			metadata,
 			export: exported,
 			error: {
 				failed_phase: failedPhase(exported),
@@ -389,6 +428,29 @@ function isUnavailable(message: string): boolean {
 	return message.includes("fetch failed") || message.includes("ECONNREFUSED") || message.includes("AbortError") || message.includes("HTTP 401");
 }
 
+async function waitForRecall(adapter: LettaAdapter, scope: AdapterScope, prompt: string, ...needles: string[]): Promise<boolean> {
+	const deadline = Date.now() + Number(process.env.LETTA_RECALL_TIMEOUT_MS ?? DEFAULT_RECALL_TIMEOUT_MS);
+	while (Date.now() <= deadline) {
+		const result = await adapter.run({ scope, prompt });
+		if (needles.every((needle) => result.output.includes(needle))) return true;
+		await delay(Number(process.env.LETTA_RECALL_POLL_MS ?? DEFAULT_RECALL_POLL_MS));
+	}
+	return false;
+}
+
+/** After delete the agent is gone: a search either misses the marker or 404s — both prove the memory was removed. */
+async function searchMissesAfterDelete(adapter: LettaAdapter, scope: AdapterScope, agentId: string | null): Promise<boolean> {
+	if (!agentId) return false;
+	const missScope: AdapterScope = { id: scope.id, metadata: { agent_id: agentId } };
+	try {
+		const after = await adapter.run({ scope: missScope, prompt: `Find lifecycle marker for ${scope.id}` });
+		return !after.output.includes(scope.id);
+	} catch (caught) {
+		const message = caught instanceof Error ? caught.message : String(caught);
+		return /HTTP 404|not.?found/i.test(message);
+	}
+}
+
 function skippedSmoke(scope: AdapterScope, message: string, apiUrl: string | null = null, exported: AdapterExport | null = null): LettaSmokeResult {
 	return {
 		schema_version: "memswe-letta-smoke.v0.1",
@@ -397,6 +459,9 @@ function skippedSmoke(scope: AdapterScope, message: string, apiUrl: string | nul
 		scope_id: scope.id,
 		status: "skipped",
 		predicate_results: {},
+		settle_ms: null,
+		agent_id: null,
+		metadata: { model: process.env.LETTA_MODEL ?? DEFAULT_MODEL, embedding: process.env.LETTA_EMBEDDING ?? DEFAULT_EMBEDDING },
 		export: exported,
 		error: {
 			failed_phase: "preflight",
@@ -419,7 +484,7 @@ async function main(): Promise<void> {
 	const result = await runLettaLifecycleSmoke();
 	const resultPath = join(artifactsDir, "letta-smoke-result.json");
 	await writeFile(resultPath, `${JSON.stringify(result, null, "\t")}\n`);
-	console.log(`Letta lifecycle smoke ${result.status}`);
+	console.log(`Letta lifecycle smoke ${result.status}${result.settle_ms != null ? ` (settle ${result.settle_ms}ms)` : ""}`);
 	console.log(`Wrote ${relative(REPO_ROOT, resultPath)}`);
 	if (result.error) console.log(result.error.guidance);
 	if (result.status === "failed") process.exitCode = 1;

@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, readdir, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import Ajv2020Default, { Ajv2020 as Ajv2020Class, type ErrorObject } from "ajv/dist/2020.js";
 
@@ -125,30 +125,62 @@ export async function runShellCommand(
 	});
 }
 
+export const SECRET_ENV_NAME_PATTERN = /(?:secret|token|key|authorization|password|credential|langfuse|otel_exporter)/i;
+
+/**
+ * Build a child-process env from process.env with harness secrets removed
+ * (any var whose NAME matches SECRET_ENV_NAME_PATTERN — API keys, tokens,
+ * Langfuse/OTLP creds). Used for the verifier command AND the task-author
+ * setup_command / venv creation so author- or agent-reachable subprocesses
+ * never inherit the harness's credentials. Optionally prepends `prependPath`
+ * to PATH (e.g. the venv/shim bin dir).
+ */
+export function scrubSecretEnv(prependPath?: string): NodeJS.ProcessEnv {
+	const env: NodeJS.ProcessEnv = {};
+	for (const [key, value] of Object.entries(process.env)) {
+		if (SECRET_ENV_NAME_PATTERN.test(key)) continue;
+		env[key] = value;
+	}
+	if (prependPath) {
+		env.PATH = `${prependPath}:${process.env.PATH ?? ""}`;
+	}
+	return env;
+}
+
 export async function preparePythonEnvironment(
 	workdir: string,
-	setupCommand: string | undefined,
+	task: TaskYaml,
 ): Promise<{ shimDir: string; setupResult?: ShellCommandResult }> {
-	const shimDir = join(workdir, ".memswe-bin");
+	const setupCommand = task.harbor?.environment?.setup_command;
+	if (!requiresPythonEnvironment(task, setupCommand)) {
+		return { shimDir: "", setupResult: undefined };
+	}
+
 	const venvDir = join(workdir, ".memswe-venv");
 	const venvBinDir = join(venvDir, "bin");
-	await mkdir(shimDir, { recursive: true });
-	const createVenvResult = await runShellCommand("python3 -m venv .memswe-venv", workdir, process.env, 120_000);
+	const createVenvResult = await runShellCommand("python3 -m venv .memswe-venv", workdir, scrubSecretEnv(), 120_000);
 	if (createVenvResult.exit_code !== 0) {
 		throw new Error(`Failed to create verifier virtualenv: ${createVenvResult.stderr || createVenvResult.stdout}`);
 	}
-	await symlink(join(venvBinDir, "python"), join(shimDir, "python")).catch((error: NodeJS.ErrnoException) => {
-		if (error.code !== "EEXIST") throw error;
-	});
-	await symlink(join(venvBinDir, "pip"), join(shimDir, "pip")).catch((error: NodeJS.ErrnoException) => {
-		if (error.code !== "EEXIST") throw error;
-	});
-	const setupEnv = { ...process.env, PATH: `${venvBinDir}:${process.env.PATH ?? ""}` };
+	const setupEnv = scrubSecretEnv(venvBinDir);
 	const setupResult = setupCommand ? await runShellCommand(setupCommand, workdir, setupEnv, 300_000) : undefined;
 	if (setupResult && setupResult.exit_code !== 0) {
 		throw new Error(`Verifier setup failed: ${setupResult.stderr || setupResult.stdout}`);
 	}
 	return { shimDir: venvBinDir, setupResult };
+}
+
+function requiresPythonEnvironment(task: TaskYaml, setupCommand: string | undefined): boolean {
+	if (setupCommand && /(?:^|\s)(?:python3?|pip3?|pytest)(?:\s|$)/.test(setupCommand)) return true;
+	const verifiers = task.memswe?.verifiers;
+	for (const spec of [
+		...(verifiers?.visible_tests ?? []),
+		...(verifiers?.hidden_tests ?? []),
+		...(verifiers?.protected_tests ?? []),
+	]) {
+		if (/(?:^|\s)(?:python3?|pip3?|pytest)(?:\s|$)/.test(spec.command ?? "")) return true;
+	}
+	return false;
 }
 
 export function inferVerifierAssets(taskDir: string, workdir: string, task: TaskYaml, includeHidden: boolean): VerifierAsset[] {

@@ -44,6 +44,7 @@ export type MemSweTraceExportResult =
 type MemSweOtlpExporterConfig = {
 	endpoint: string;
 	endpointSource: "LANGFUSE_OTLP_ENDPOINT" | "OTEL_EXPORTER_OTLP_ENDPOINT";
+	authorizationHeader?: string;
 };
 
 
@@ -116,7 +117,7 @@ export function createEnabledMemSweTrace(
 				trace_id: traceId,
 				trace_store_ref: artifactTraceStoreRef,
 				spans: artifactSpans,
-				completeness: traceCompletenessSummary({ enabled: true, trace_id: traceId, trace_store_ref: artifactTraceStoreRef, spans: artifactSpans }),
+				completeness: traceCompletenessForSpans(artifactSpans),
 			};
 		},
 		flush: async () => {
@@ -137,6 +138,16 @@ export function traceCompletenessSummary(artifact: MemSweTraceArtifact): MemSweT
 		return { complete: false, missingKinds: [...REQUIRED_SPAN_KINDS], traceCoverage: 0 };
 	}
 	const presentKinds = new Set(artifact.spans.map((span) => span.kind));
+	const missingKinds = REQUIRED_SPAN_KINDS.filter((kind) => !presentKinds.has(kind));
+	return {
+		complete: missingKinds.length === 0,
+		missingKinds,
+		traceCoverage: (REQUIRED_SPAN_KINDS.length - missingKinds.length) / REQUIRED_SPAN_KINDS.length,
+	};
+}
+
+function traceCompletenessForSpans(spans: MemSweTraceSpan[]): MemSweTraceCompleteness {
+	const presentKinds = new Set(spans.map((span) => span.kind));
 	const missingKinds = REQUIRED_SPAN_KINDS.filter((kind) => !presentKinds.has(kind));
 	return {
 		complete: missingKinds.length === 0,
@@ -180,11 +191,23 @@ function copyTraceSpans(spans: MemSweTraceSpan[]): MemSweTraceSpan[] {
 }
 
 function resolveMemSweOtlpExporterConfig(env = process.env): MemSweOtlpExporterConfig | null {
+	const authorizationHeader = resolveLangfuseBasicAuthHeader(env);
 	const langfuseEndpoint = parseEndpoint(env.LANGFUSE_OTLP_ENDPOINT);
-	if (langfuseEndpoint) return { endpoint: langfuseEndpoint, endpointSource: "LANGFUSE_OTLP_ENDPOINT" };
+	if (langfuseEndpoint) return { endpoint: langfuseEndpoint, endpointSource: "LANGFUSE_OTLP_ENDPOINT", authorizationHeader };
 	const otelEndpoint = parseEndpoint(env.OTEL_EXPORTER_OTLP_ENDPOINT);
-	if (otelEndpoint) return { endpoint: otelEndpoint, endpointSource: "OTEL_EXPORTER_OTLP_ENDPOINT" };
+	if (otelEndpoint) return { endpoint: otelEndpoint, endpointSource: "OTEL_EXPORTER_OTLP_ENDPOINT", authorizationHeader };
 	return null;
+}
+
+export function isMemSweOtlpExportConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
+	return resolveMemSweOtlpExporterConfig(env) !== null;
+}
+
+function resolveLangfuseBasicAuthHeader(env: NodeJS.ProcessEnv): string | undefined {
+	const publicKey = env.LANGFUSE_PUBLIC_KEY;
+	const secretKey = env.LANGFUSE_SECRET_KEY;
+	if (!publicKey || !secretKey) return undefined;
+	return `Basic ${Buffer.from(`${publicKey}:${secretKey}`).toString("base64")}`;
 }
 
 function parseEndpoint(endpoint: string | undefined): string | null {
@@ -203,12 +226,16 @@ async function exportOtlpTrace(
 	startedAtMs: number,
 	spans: MemSweTraceSpan[],
 ): Promise<void> {
+	const headers: Record<string, string> = {
+		"content-type": "application/json",
+		"memswe-otlp-endpoint-source": config.endpointSource,
+	};
+	if (config.authorizationHeader) {
+		headers.authorization = config.authorizationHeader;
+	}
 	const response = await fetch(config.endpoint, {
 		method: "POST",
-		headers: {
-			"content-type": "application/json",
-			"memswe-otlp-endpoint-source": config.endpointSource,
-		},
+		headers,
 		body: JSON.stringify(toOtlpJsonTrace(runId, startedAtMs, spans)),
 	});
 	if (!response.ok) {

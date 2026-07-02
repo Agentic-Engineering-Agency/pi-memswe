@@ -18,17 +18,20 @@ import {
 	SettingsManager,
 } from "../src/index.ts";
 import {
+	SessionSpec,
+	VerifierSpec,
 	discoverTaskIds,
 	inferVerifierAssets,
 	initializeWorktreeBaseline,
 	preparePythonEnvironment,
+	scrubSecretEnv,
 	type TaskYaml,
 	validateRunRecordAgainstSchema,
 	validateRunRecordShape,
 	validFactsBeforeSession,
 	writePatchArtifacts,
 } from "./memswe-smoke-runner-lib.ts";
-import { createMemSweTrace, memoryLatencySummary, traceCompletenessSummary } from "./memswe-trace-scaffold.ts";
+import { createMemSweTrace, isMemSweOtlpExportConfigured, memoryLatencySummary, traceCompletenessSummary } from "./memswe-trace-scaffold.ts";
 
 const DEFAULT_TASK_ID = "repo-gamma-invoice-export-001";
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -37,8 +40,6 @@ const MEMSWE_ROOT = resolve(REPO_ROOT, "../memswe");
 const RUNS_ROOT = join(REPO_ROOT, ".memswe-runs");
 const MEMORY_CONDITION_IDS = ["no_memory", "full_context", "repository_docs", "hindsight"] as const;
 const AGENT_MODE_IDS = ["faux-text", "minimax-real"] as const;
-const SECRET_ENV_NAME_PATTERN = /(?:secret|token|key|authorization|password|credential|langfuse|otel_exporter)/i;
-
 
 type VerifierKind = "visible" | "hidden" | "protected";
 type MemoryConditionId = (typeof MEMORY_CONDITION_IDS)[number];
@@ -492,13 +493,7 @@ async function runCommand(command: VerifierCommand, cwd: string, timeoutMs: numb
 }
 
 function verifierEnvironment(shimDir: string): NodeJS.ProcessEnv {
-	const env: NodeJS.ProcessEnv = {};
-	for (const [key, value] of Object.entries(process.env)) {
-		if (SECRET_ENV_NAME_PATTERN.test(key)) continue;
-		env[key] = value;
-	}
-	env.PATH = `${shimDir}:${process.env.PATH ?? ""}`;
-	return env;
+	return scrubSecretEnv(shimDir);
 }
 
 async function copyVerifierFiles(taskDir: string, workdir: string, task: TaskYaml, includeHidden: boolean): Promise<void> {
@@ -588,7 +583,7 @@ async function runTask(
 		);
 	}
 	const patchArtifacts = await writePatchArtifacts(repoDir, artifactsDir);
-	const pythonEnvironment = await preparePythonEnvironment(repoDir, parsed.harbor?.environment?.setup_command);
+	const pythonEnvironment = await preparePythonEnvironment(repoDir, parsed);
 	if (pythonEnvironment.setupResult) {
 		await writeFile(join(artifactsDir, "setup-result.json"), `${JSON.stringify(pythonEnvironment.setupResult, null, "	")}\n`);
 		console.log(
@@ -735,7 +730,7 @@ async function main(): Promise<void> {
 	const skipFauxAgent = hasFlag("--skip-faux-agent");
 	const conditionId = parseConditionId(getArgumentValue("--condition"));
 	const agentMode = parseAgentMode(getArgumentValue("--agent-mode"));
-	const traceEnabled = hasFlag("--otel-trace");
+	const traceEnabled = !hasFlag("--no-otel-trace") && (hasFlag("--otel-trace") || isMemSweOtlpExportConfigured());
 	const timestamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
 	if (!hasFlag("--all-tasks")) {
 		const result = await runTask(getArgumentValue("--task-id") ?? DEFAULT_TASK_ID, timestamp, includeHidden, skipFauxAgent, conditionId, agentMode, traceEnabled);
