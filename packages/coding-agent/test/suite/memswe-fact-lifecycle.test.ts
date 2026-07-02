@@ -49,18 +49,14 @@ describe("validFactsBeforeSession lifecycle filtering", () => {
 	});
 
 	test("invalid_after_session: fact drops out once the session passes its validity window", () => {
-		const t = task([
-			{ id: "f1", text: "stale-able", first_valid_session: "s1", invalid_after_session: "s3" },
-		]);
+		const t = task([{ id: "f1", text: "stale-able", first_valid_session: "s1", invalid_after_session: "s3" }]);
 		expect(ids(t, "s2")).toEqual(["f1"]); // valid within window
 		expect(ids(t, "s3")).toEqual(["f1"]); // boundary: still valid at invalid_after session
 		expect(ids(t, "s4")).toEqual([]); // expired after the window
 	});
 
 	test("forget_requested_session: fact is excluded in sessions after the forget request", () => {
-		const t = task([
-			{ id: "f1", text: "forgettable", first_valid_session: "s1", forget_requested_session: "s2" },
-		]);
+		const t = task([{ id: "f1", text: "forgettable", first_valid_session: "s1", forget_requested_session: "s2" }]);
 		expect(ids(t, "s2")).toEqual(["f1"]); // boundary: still present at forget session
 		expect(ids(t, "s3")).toEqual([]); // gone afterwards
 	});
