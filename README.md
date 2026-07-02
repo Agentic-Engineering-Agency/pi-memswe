@@ -42,7 +42,7 @@ Trace export to Langfuse via OTLP/HTTP JSON has been default-on since [#9](https
 
 `hindsight` is the harness's first real AMS (agentic memory system) target — see `packages/coding-agent/scripts/memswe-hindsight-smoke.ts` (`npm --prefix packages/coding-agent run memswe:hindsight-smoke`) and `SOUL.md`'s Memory conditions section for the adapter-readiness bar it must clear before promotion out of smoke-only status.
 
-omniroute is the preferred model gateway going forward; a dedicated `--agent-mode=omniroute` (or `auto-free`-style) selector for `memswe-smoke-runner.ts` is planned but not yet implemented — current `--agent-mode` values remain `faux-text` (default, deterministic) and `minimax-real` (gated behind `MEMSWE_ALLOW_REAL_MODEL=1`).
+`omniroute` is wired as `--agent-mode=omniroute-free` (tools-off plumbing check, same shape as `minimax-real` — direct `chat/completions` call, no coding-agent session). Requires `MEMSWE_ALLOW_REAL_MODEL=1`, `OMNIROUTE_API_KEY`, and an explicit `OMNIROUTE_MODEL` (e.g. `auto/coding:free`; fails fast if unset, no hardcoded default). `--agent-mode` values are now `faux-text` (default, deterministic), `minimax-real`, and `omniroute-free`. The `hindsight` memory condition is also wired (`prepareCondition` dispatches to a bank-per-run Hindsight flow against `HINDSIGHT_API_URL`, default `http://hindsight-server:8888`). Both live-verified end-to-end 2026-07-02 against `repo-gamma-invoice-export-001`.
 
 * **[@earendil-works/pi-coding-agent](packages/coding-agent)**: Interactive coding agent CLI
 * **[@earendil-works/pi-agent-core](packages/agent)**: Agent runtime with tool calling and state management
