@@ -44,7 +44,10 @@ const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "../../..");
 const RUNS_ROOT = join(REPO_ROOT, ".memswe-runs");
 const PROVIDER_ID = "honcho";
-const DEFAULT_API_URL = "http://localhost:8000";
+const DEFAULT_SELFHOST_API_URL = "http://localhost:8000";
+// Honcho Cloud (managed platform, app.honcho.dev keys). Per AGE-158 the cloud key is tried against cloud
+// FIRST, then the SAME key is retried against HONCHO_API_URL (self-host) if the cloud attempt is unreachable.
+const DEFAULT_CLOUD_API_URL = "https://api.honcho.dev";
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_RECALL_TIMEOUT_MS = 60_000;
 const DEFAULT_RECALL_POLL_MS = 2_000;
@@ -89,6 +92,10 @@ type HonchoSmokeResult = {
 	predicate_results: Record<string, boolean>;
 	settle_ms: number | null;
 	export: AdapterExport | null;
+	// Which endpoint kind actually ran the lifecycle (cloud is tried first, self-host is the fallback).
+	endpoint?: "cloud" | "selfhost";
+	// Per-endpoint attempt log so a fallback chain (cloud unreachable → self-host) is auditable.
+	attempts?: { endpoint: "cloud" | "selfhost"; api_url: string; status: "passed" | "failed" | "skipped"; message?: string }[];
 	error?: {
 		failed_phase: string;
 		message: string;
@@ -104,7 +111,7 @@ export class HonchoAdapter implements AmsAdapter {
 	private readonly artifacts: NormalizedArtifact[] = [];
 
 	constructor(options: HonchoAdapterOptions = {}) {
-		this.apiUrl = (options.apiUrl ?? DEFAULT_API_URL).replace(/\/$/, "");
+		this.apiUrl = (options.apiUrl ?? DEFAULT_SELFHOST_API_URL).replace(/\/$/, "");
 		this.apiKey = options.apiKey;
 		this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	}
@@ -113,7 +120,16 @@ export class HonchoAdapter implements AmsAdapter {
 	async reset(scope: AdapterScope): Promise<NormalizedTrace> {
 		const trace = emptyTrace(scope);
 		const workspaceId = this.workspaceId(scope);
-		// Tolerate a missing workspace (first run) and a forbidden delete (shared key without admin).
+		// Honcho refuses to delete a workspace while sessions remain (HTTP 409); delete the session first.
+		// Tolerate a missing session/workspace (first run) and a forbidden delete (shared key without admin).
+		await this.captureRequest(trace, {
+			method: "DELETE",
+			path: `/v3/workspaces/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(SESSION_ID)}`,
+			operation: "delete",
+			scope,
+			allowNotFound: true,
+			allowForbidden: true,
+		});
 		await this.captureRequest(trace, {
 			method: "DELETE",
 			path: `/v3/workspaces/${encodeURIComponent(workspaceId)}`,
@@ -184,9 +200,19 @@ export class HonchoAdapter implements AmsAdapter {
 
 	async delete(scope: AdapterScope): Promise<NormalizedTrace> {
 		const trace = emptyTrace(scope);
+		const workspaceId = this.workspaceId(scope);
+		// Honcho refuses to delete a workspace while sessions remain (HTTP 409), so tear the session down first.
 		await this.captureRequest(trace, {
 			method: "DELETE",
-			path: `/v3/workspaces/${encodeURIComponent(this.workspaceId(scope))}`,
+			path: `/v3/workspaces/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(SESSION_ID)}`,
+			operation: "delete",
+			scope,
+			allowNotFound: true,
+			allowForbidden: true,
+		});
+		await this.captureRequest(trace, {
+			method: "DELETE",
+			path: `/v3/workspaces/${encodeURIComponent(workspaceId)}`,
 			operation: "delete",
 			scope,
 			allowNotFound: true,
@@ -315,9 +341,41 @@ export class HonchoAdapter implements AmsAdapter {
 	}
 }
 
+/**
+ * Cloud-first lifecycle smoke (AGE-158). Per founder: try the cloud key against Honcho Cloud FIRST; if that
+ * endpoint is unreachable, retry the SAME key against HONCHO_API_URL (self-host). A definitive cloud result
+ * (passed/failed with predicates evaluated) is returned as-is — only an UNREACHABLE cloud (skipped:
+ * fetch failed / ECONNREFUSED / 401 / timeout) triggers the self-host fallback. The endpoint that actually
+ * ran, and the full attempt chain, are recorded on the result.
+ */
 export async function runHonchoLifecycleSmoke(): Promise<HonchoSmokeResult> {
 	const apiKey = process.env.HONCHO_API_KEY;
-	const apiUrl = process.env.HONCHO_API_URL ?? DEFAULT_API_URL;
+	const selfhostUrl = process.env.HONCHO_API_URL ?? DEFAULT_SELFHOST_API_URL;
+	const cloudUrl = process.env.HONCHO_CLOUD_API_URL ?? DEFAULT_CLOUD_API_URL;
+	const attempts: NonNullable<HonchoSmokeResult["attempts"]> = [];
+
+	// Attempt 1: cloud, gated on a cloud key (Honcho Cloud requires Bearer auth).
+	let cloudResult: HonchoSmokeResult | null = null;
+	if (apiKey) {
+		cloudResult = await runHonchoLifecycleSmokeAgainst(cloudUrl, apiKey);
+		attempts.push({ endpoint: "cloud", api_url: cloudUrl, status: cloudResult.status, message: cloudResult.error?.message });
+		// A definitive cloud verdict (server reachable, predicates evaluated) is authoritative — return it.
+		if (cloudResult.status !== "skipped") return { ...cloudResult, endpoint: "cloud", attempts };
+	} else {
+		attempts.push({ endpoint: "cloud", api_url: cloudUrl, status: "skipped", message: "HONCHO_API_KEY not set; skipping cloud attempt" });
+	}
+
+	// Attempt 2: self-host fallback (same key; a self-host running USE_AUTH=false ignores it).
+	const selfhostResult = await runHonchoLifecycleSmokeAgainst(selfhostUrl, apiKey);
+	attempts.push({ endpoint: "selfhost", api_url: selfhostUrl, status: selfhostResult.status, message: selfhostResult.error?.message });
+	if (selfhostResult.status !== "skipped") return { ...selfhostResult, endpoint: "selfhost", attempts };
+
+	// Both endpoints unreachable → surface the self-host skip (with the full attempt chain for triage).
+	return { ...(cloudResult && cloudResult.status === "skipped" ? cloudResult : selfhostResult), attempts };
+}
+
+/** Run the retain→recall→delete→miss lifecycle against ONE Honcho endpoint. */
+async function runHonchoLifecycleSmokeAgainst(apiUrl: string, apiKey: string | undefined): Promise<HonchoSmokeResult> {
 	const timestamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
 	const scope: AdapterScope = { id: mintRunScopeId("honcho-smoke", timestamp) };
 	const adapter = new HonchoAdapter({
@@ -447,8 +505,16 @@ async function waitForRecall(adapter: HonchoAdapter, scope: AdapterScope, prompt
 async function waitForMiss(adapter: HonchoAdapter, scope: AdapterScope, prompt: string, ...needles: string[]): Promise<boolean> {
 	const deadline = Date.now() + Number(process.env.HONCHO_MISS_TIMEOUT_MS ?? DEFAULT_MISS_TIMEOUT_MS);
 	while (Date.now() <= deadline) {
-		const result = await adapter.run({ scope, prompt });
-		if (!needles.some((needle) => result.output.includes(needle))) return true;
+		let output: string;
+		try {
+			output = (await adapter.run({ scope, prompt })).output;
+		} catch (caught) {
+			// A deleted session/workspace makes the recall probe 404 — that IS the miss (the namespace is gone).
+			const message = caught instanceof Error ? caught.message : String(caught);
+			if (/HTTP 404/.test(message) && /not found/i.test(message)) return true;
+			throw caught;
+		}
+		if (!needles.some((needle) => output.includes(needle))) return true;
 		await delay(Number(process.env.HONCHO_RECALL_POLL_MS ?? DEFAULT_RECALL_POLL_MS));
 	}
 	return false;
