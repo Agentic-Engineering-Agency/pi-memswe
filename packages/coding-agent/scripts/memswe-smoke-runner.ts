@@ -33,13 +33,15 @@ import {
 	collectPriorTranscripts,
 	renderFullContextPreamble,
 	type PriorTranscript,
+	resolveModelPricing,
 } from "./memswe-smoke-runner-lib.ts";
 import { createMemSweTrace, isMemSweOtlpExportConfigured, memoryLatencySummary, traceCompletenessSummary } from "./memswe-trace-scaffold.ts";
 import { runFilesystemLifecycleSmoke } from "./memswe-adapter-filesystem.ts";
 import { runLocalRagLifecycleSmoke } from "./memswe-adapter-localrag.ts";
 import { runZepLifecycleSmoke } from "./memswe-adapter-zep.ts";
 import { runSupermemoryLifecycleSmoke } from "./memswe-adapter-supermemory.ts";
-import { runHonchoLifecycleSmoke } from "./memswe-adapter-honcho.ts";
+import { runHonchoLifecycleSmoke, runHonchoGradedMemory, readbackHonchoWorkspace } from "./memswe-adapter-honcho.ts";
+import type { HonchoGradedMemoryResult } from "./memswe-adapter-honcho.ts";
 import { runGraphitiLifecycleSmoke } from "./memswe-adapter-graphiti.ts";
 import { runMem0LifecycleSmoke } from "./memswe-adapter-mem0.ts";
 import { runLettaLifecycleSmoke } from "./memswe-adapter-letta.ts";
@@ -170,6 +172,7 @@ type ConditionPrepareResult = {
 	condition_id: MemoryConditionId;
 	memory_system: string | null;
 	artifact_paths: Record<string, string>;
+	honcho_memory?: HonchoGradedMemoryResult;
 };
 
 function getArgumentValue(name: string): string | undefined {
@@ -326,11 +329,12 @@ async function runFauxAgentSession(
 	workdir: string,
 	artifactsDir: string,
 	priorTranscripts?: PriorTranscript[],
+	memoryPreamble?: string,
 ): Promise<AgentRunResult> {
 	const gradedSession = resolveGradedSession(task);
 	const gradedPrompt = await readFile(join(taskDir, gradedSession.prompt_ref!), "utf8");
-	const preamble = priorTranscripts ? renderFullContextPreamble(priorTranscripts) : "";
-	const prompt = preamble ? `${preamble}\n${gradedPrompt}` : gradedPrompt;
+	const fullContextPreamble = priorTranscripts ? renderFullContextPreamble(priorTranscripts) : "";
+	const prompt = [memoryPreamble, fullContextPreamble, gradedPrompt].filter((part) => part && part.length > 0).join("\n");
 	const fauxProvider = registerFauxProvider();
 	const model = fauxProvider.getModel();
 	fauxProvider.setResponses([
@@ -415,11 +419,12 @@ async function runRealAgentSession(
 	workdir: string,
 	artifactsDir: string,
 	priorTranscripts?: PriorTranscript[],
+	memoryPreamble?: string,
 ): Promise<AgentRunResult> {
 	const gradedSession = resolveGradedSession(task);
 	const gradedPrompt = await readFile(join(taskDir, gradedSession.prompt_ref!), "utf8");
-	const preamble = priorTranscripts ? renderFullContextPreamble(priorTranscripts) : "";
-	const prompt = preamble ? `${preamble}\n${gradedPrompt}` : gradedPrompt;
+	const fullContextPreamble = priorTranscripts ? renderFullContextPreamble(priorTranscripts) : "";
+	const prompt = [memoryPreamble, fullContextPreamble, gradedPrompt].filter((part) => part && part.length > 0).join("\n");
 	if (process.env.MEMSWE_ALLOW_REAL_MODEL !== "1") {
 		throw new Error("--agent-mode=real requires MEMSWE_ALLOW_REAL_MODEL=1 to confirm intentional real-model spend.");
 	}
@@ -439,36 +444,11 @@ async function runRealAgentSession(
 
 	let model = modelRegistry.find(providerId, modelId);
 	if (!model && baseUrl) {
-		// Default pricing for the configured model so per_task_cost_usd is non-zero
-		// even when the MEMSWE_LLM_*_COST_PER_M env vars are unset. Env vars still
-		// take priority. Defaults are DeepSeek-V4-Flash pricing (USD per 1M tokens).
-		const DEFAULT_MODEL_PRICING: Record<string, { input: number; output: number }> = {
-			"azure/deepseek-v4-flash": { input: 0.14, output: 0.28 },
-		};
-		const defaultPricing = DEFAULT_MODEL_PRICING[modelId];
-
-		const envInput = process.env.MEMSWE_LLM_INPUT_COST_PER_M;
-		const envOutput = process.env.MEMSWE_LLM_OUTPUT_COST_PER_M;
-		const envCacheRead = process.env.MEMSWE_LLM_CACHE_READ_COST_PER_M;
-		const envCacheWrite = process.env.MEMSWE_LLM_CACHE_WRITE_COST_PER_M;
-
-		const inputCost = envInput !== undefined ? Number(envInput) : defaultPricing?.input ?? 0;
-		const outputCost = envOutput !== undefined ? Number(envOutput) : defaultPricing?.output ?? 0;
-		const cacheReadCost = envCacheRead ? Number(envCacheRead) : 0;
-		const cacheWriteCost = envCacheWrite ? Number(envCacheWrite) : 0;
-
-		const isValidInput = Number.isFinite(inputCost) && inputCost >= 0;
-		const isValidOutput = Number.isFinite(outputCost) && outputCost >= 0;
-
-		const pricingSource = envInput !== undefined || envOutput !== undefined
-			? "environment variables"
-			: defaultPricing
-				? `baked default for ${modelId}`
-				: "none";
-		if (isValidInput && isValidOutput && (envInput !== undefined || envOutput !== undefined || defaultPricing)) {
-			console.log(`[Cost Registry] Registering model ${modelId} with pricing: ${inputCost} input, ${outputCost} output per 1M tokens (source: ${pricingSource}).`);
-		} else {
+		const pricing = resolveModelPricing(modelId, process.env);
+		if (pricing.source === "none") {
 			console.warn(`[Cost Registry] WARNING: No pricing config for ${modelId}. Set MEMSWE_LLM_INPUT_COST_PER_M and MEMSWE_LLM_OUTPUT_COST_PER_M to enable non-zero cost tracking. Defaulting to 0.`);
+		} else {
+			console.log(`[Cost Registry] Registering model ${modelId} with pricing: ${pricing.input} input, ${pricing.output} output per 1M tokens (source: ${pricing.source}).`);
 		}
 
 		modelRegistry.registerProvider(providerId, {
@@ -482,10 +462,10 @@ async function runRealAgentSession(
 				reasoning: false,
 				input: ["text"],
 				cost: {
-					input: isValidInput ? inputCost : 0,
-					output: isValidOutput ? outputCost : 0,
-					cacheRead: Number.isFinite(cacheReadCost) && cacheReadCost >= 0 ? cacheReadCost : 0,
-					cacheWrite: Number.isFinite(cacheWriteCost) && cacheWriteCost >= 0 ? cacheWriteCost : 0,
+					input: pricing.input,
+					output: pricing.output,
+					cacheRead: pricing.cacheRead,
+					cacheWrite: pricing.cacheWrite,
 				},
 				contextWindow: 128000,
 				maxTokens: 8192,
@@ -585,9 +565,10 @@ async function runAgentSession(
 	workdir: string,
 	artifactsDir: string,
 	priorTranscripts?: PriorTranscript[],
+	memoryPreamble?: string,
 ): Promise<AgentRunResult> {
-	if (agentMode === "real" || agentMode === "minimax-real") return runRealAgentSession(task, taskDir, workdir, artifactsDir, priorTranscripts);
-	return runFauxAgentSession(task, taskDir, workdir, artifactsDir, priorTranscripts);
+	if (agentMode === "real" || agentMode === "minimax-real") return runRealAgentSession(task, taskDir, workdir, artifactsDir, priorTranscripts, memoryPreamble);
+	return runFauxAgentSession(task, taskDir, workdir, artifactsDir, priorTranscripts, memoryPreamble);
 }
 
 function verifierCommands(task: TaskYaml, includeHidden: boolean): VerifierCommand[] {
@@ -661,8 +642,7 @@ async function copyVerifierFiles(taskDir: string, workdir: string, task: TaskYam
 		await copyFile(asset.source, asset.destination);
 	}
 }
-
-async function prepareCondition(conditionId: MemoryConditionId, task: TaskYaml, workdir: string, artifactsDir: string, taskDir: string): Promise<ConditionPrepareResult> {
+async function prepareCondition(conditionId: MemoryConditionId, task: TaskYaml, workdir: string, artifactsDir: string, taskDir: string, runId: string): Promise<ConditionPrepareResult> {
 	const isProvider = (PROVIDER_CONDITION_IDS as readonly string[]).includes(conditionId);
 	if (conditionId !== "no_memory" && conditionId !== "repository_docs" && conditionId !== "full_context" && !isProvider) {
 		throw new Error(`Memory condition ${conditionId} is not implemented`);
@@ -670,6 +650,7 @@ async function prepareCondition(conditionId: MemoryConditionId, task: TaskYaml, 
 	const conditionResultPath = join(artifactsDir, "condition-result.json");
 	const artifactPaths: Record<string, string> = { condition_result: conditionResultPath };
 	let memorySystem: string | null = null;
+	let honchoMemory: HonchoGradedMemoryResult | undefined;
 	if (conditionId === "repository_docs") {
 		const docsPath = join(workdir, "docs/agent-project-memory/memswe-facts.md");
 		const docsArtifactPath = join(artifactsDir, "repository-docs/memswe-facts.md");
@@ -687,6 +668,22 @@ async function prepareCondition(conditionId: MemoryConditionId, task: TaskYaml, 
 		const prior = collectPriorTranscripts(task, taskDir);
 		await writeFile(transcriptPath, `${JSON.stringify(prior, null, "	")}\n`);
 		artifactPaths.full_context_transcript = transcriptPath;
+	} else if (conditionId === "honcho") {
+		// AGE-206: honcho graded runs use a PERSISTENT, per-run-isolated Honcho workspace instead of the
+		// self-deleting lifecycle smoke. Seed the valid remembered facts into the run-scoped workspace, then
+		// recall a memory preamble that is injected into the graded prompt. The workspace is NOT deleted so
+		// that a post-session readback (see runTask) can prove peer + conclusion/derived data landed.
+		const gradedSession = resolveGradedSession(task);
+		const facts = validFactsBeforeSession(task, gradedSession.session_id!)
+			.map((fact) => fact.text)
+			.filter((text): text is string => typeof text === "string" && text.length > 0);
+		const recallQuery = "Summarize everything you remember about this project from prior sessions.";
+		const mem = await runHonchoGradedMemory({ scopeId: runId, facts, recallQuery });
+		const memPath = join(artifactsDir, "honcho-graded-memory.json");
+		await writeFile(memPath, `${JSON.stringify(mem, null, "	")}\n`);
+		artifactPaths.honcho_graded_memory = memPath;
+		memorySystem = "honcho";
+		honchoMemory = mem;
 	} else if (isProvider) {
 		// Run the adapter lifecycle smoke for this provider and record it. A cloud provider with no
 		// API key returns status "skipped" (not "failed"); either way memory_system is the provider id
@@ -701,6 +698,7 @@ async function prepareCondition(conditionId: MemoryConditionId, task: TaskYaml, 
 		condition_id: conditionId,
 		memory_system: memorySystem,
 		artifact_paths: artifactPaths,
+		honcho_memory: honchoMemory,
 	};
 	await writeFile(conditionResultPath, `${JSON.stringify(result, null, "	")}\n`);
 	return result;
@@ -738,10 +736,14 @@ async function runTask(
 	const parsed = parse(await readFile(taskYamlPath, "utf8"));
 	if (!isTaskYaml(parsed)) throw new Error(`Expected object task YAML at ${taskYamlPath}`);
 
-	const runId = `memswe-smoke-${taskId}-${timestamp}`;
+	// AGE-206: carry condition + repetition into the run id so runs are namespace-isolated and auditable.
+	// The honcho condition derives its per-run Honcho workspace id from this scope, so it must be unique
+	// per (task, condition, repetition, timestamp) or repetitions would share a workspace.
+	const runSlug = `${taskId}-${conditionId}-r${repetitionIndex}`;
+	const runId = `memswe-smoke-${runSlug}-${timestamp}`;
 	const trace = createMemSweTrace(runId, traceEnabled);
 	const benchmarkSpan = trace.startSpan("benchmark", "benchmark.run", { task_id: taskId, condition_id: conditionId, agent_mode: agentMode });
-	const artifactsDir = join(RUNS_ROOT, timestamp, taskId);
+	const artifactsDir = join(RUNS_ROOT, timestamp, `${taskId}-${conditionId}-r${repetitionIndex}`);
 	const workdir = join(tmpdir(), runId, "worktree");
 	const repoDir = join(workdir, "fixture");
 	await rm(dirname(workdir), { recursive: true, force: true });
@@ -750,18 +752,49 @@ async function runTask(
 	await copyVerifierFiles(taskDir, workdir, parsed, includeHidden);
 	await mkdir(artifactsDir, { recursive: true });
 	const memorySpan = trace.startSpan("memory", "memory.prepare", { condition_id: conditionId });
-	const conditionResult = await prepareCondition(conditionId, parsed, repoDir, artifactsDir, taskDir);
+	const conditionResult = await prepareCondition(conditionId, parsed, repoDir, artifactsDir, taskDir, runId);
 	memorySpan.end();
 	await initializeWorktreeBaseline(repoDir);
 
 	const agentSessionStart = performance.now();
 	const priorTranscripts = conditionId === "full_context" ? collectPriorTranscripts(parsed, taskDir) : undefined;
-	const agentResult = skipFauxAgent ? undefined : await runAgentSession(agentMode, parsed, taskDir, repoDir, artifactsDir, priorTranscripts);
+	// AGE-206: honcho graded runs read their seeded per-run Honcho workspace via a recall preamble, then
+	// write the graded outcome back and assert readback (peer + conclusion/derived data) AFTER the session.
+	const honchoMemory = conditionResult.honcho_memory;
+	const memoryPreamble = honchoMemory?.preamble;
+	const agentResult = skipFauxAgent
+		? undefined
+		: await runAgentSession(agentMode, parsed, taskDir, repoDir, artifactsDir, priorTranscripts, memoryPreamble);
 	const agentSessionLatencyMs = skipFauxAgent ? 0 : Math.round(performance.now() - agentSessionStart);
 	if (agentResult) {
 		console.log(
 			`${agentResult.agent_mode} agent session ${agentResult.session_id} finished with ${agentResult.status}; captured ${agentResult.event_count} event(s).`,
 		);
+	}
+	// AGE-206: after the graded honcho session, write the agent's conclusion back into the SAME per-run
+	// Honcho workspace and assert readback (peer representation + conclusion/derived data). The workspace is
+	// never deleted, so this proves persisted graded memory rather than a throwaway lifecycle smoke.
+	let honchoReadbackPassed = true;
+	if (conditionId === "honcho" && honchoMemory) {
+		const agentConclusion = agentResult?.final_response?.trim() || "(no agent output captured for this run)";
+		const conclusionText = `[graded-conclusion ${runId}] ${agentConclusion}`.slice(0, 4000);
+		const readback: Record<string, unknown> =
+			honchoMemory.status === "ready"
+				? await readbackHonchoWorkspace({ scopeId: runId, conclusionText })
+				: {
+						schema_version: "memswe-honcho-readback.v0.1",
+						created_at: new Date().toISOString(),
+						scope_id: runId,
+						status: "skipped",
+						reason: `graded honcho memory was ${honchoMemory.status}; no persistent workspace to read back`,
+					};
+		const readbackPath = join(artifactsDir, "honcho-readback.json");
+		await writeFile(readbackPath, `${JSON.stringify(readback, null, "	")}\n`);
+		conditionResult.artifact_paths.honcho_readback = readbackPath;
+		// AGE-206 acceptance requires a POSITIVE readback (peer + conclusion data). A skipped/failed readback
+		// means the graded honcho memory was never proven, so the run must not be reported as passing.
+		honchoReadbackPassed = readback.status === "passed";
+		console.log(`honcho readback for ${runId}: ${String(readback.status)} (run_gate=${honchoReadbackPassed})`);
 	}
 	const patchArtifacts = await writePatchArtifacts(repoDir, artifactsDir);
 	const pythonEnvironment = await preparePythonEnvironment(repoDir, parsed);
@@ -800,7 +833,7 @@ async function runTask(
 	const reward = scoreReward(results);
 	const verifiersPassed = results.length > 0 && passed(results) === results.length;
 	const agentPassed = agentResult?.status !== "errored";
-	const allPassed = verifiersPassed && agentPassed;
+	const allPassed = verifiersPassed && agentPassed && honchoReadbackPassed;
 	scoringSpan.end();
 	benchmarkSpan.end();
 	const traceArtifact = trace.toArtifact();
@@ -822,7 +855,12 @@ async function runTask(
 		condition: {
 			condition_id: conditionResult.condition_id,
 			memory_system: conditionResult.memory_system,
-			baseline_kind: conditionResult.memory_system ? "adapter_lifecycle_smoke" : "verifier_only_smoke",
+			baseline_kind:
+				conditionResult.condition_id === "honcho"
+					? "honcho_persistent_graded_memory"
+					: conditionResult.memory_system
+						? "adapter_lifecycle_smoke"
+						: "verifier_only_smoke",
 			model_id: agentResult ? `${agentResult.provider_id}/${agentResult.model_id}` : "none/verifier-only",
 			repetition_index: repetitionIndex,
 			k: 1,

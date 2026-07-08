@@ -374,6 +374,177 @@ export async function runHonchoLifecycleSmoke(): Promise<HonchoSmokeResult> {
 	return { ...(cloudResult && cloudResult.status === "skipped" ? cloudResult : selfhostResult), attempts };
 }
 
+// ── AGE-206: persistent, per-run-isolated graded Honcho memory (NOT the self-deleting lifecycle smoke) ──
+
+export type HonchoGradedMemoryResult = {
+	schema_version: "memswe-honcho-graded-memory.v0.1";
+	created_at: string;
+	api_url: string | null;
+	endpoint?: "cloud" | "selfhost";
+	scope_id: string;
+	workspace_id: string | null;
+	status: "ready" | "skipped" | "failed";
+	seeded_fact_count: number;
+	recall_output: string | null;
+	preamble?: string;
+	error?: { message: string; guidance: string };
+};
+
+export type HonchoReadbackResult = {
+	schema_version: "memswe-honcho-readback.v0.1";
+	created_at: string;
+	api_url: string | null;
+	endpoint?: "cloud" | "selfhost";
+	scope_id: string;
+	workspace_id: string | null;
+	peer_id: string;
+	status: "passed" | "skipped" | "failed";
+	representation_non_empty: boolean;
+	recall_non_empty: boolean;
+	conclusion_present: boolean;
+	recall_sample: string | null;
+	representation_sample: string | null;
+	error?: { message: string; guidance: string };
+};
+
+/** Cloud-first (if HONCHO_API_KEY) then self-host fallback, mirroring runHonchoLifecycleSmoke. */
+async function runHonchoAcrossEndpoints<
+	T extends { status: "ready" | "passed" | "skipped" | "failed"; endpoint?: "cloud" | "selfhost" },
+>(fn: (apiUrl: string, apiKey: string | undefined, endpoint: "cloud" | "selfhost") => Promise<T>): Promise<T> {
+	const apiKey = process.env.HONCHO_API_KEY;
+	const selfhostUrl = process.env.HONCHO_API_URL ?? DEFAULT_SELFHOST_API_URL;
+	const cloudUrl = process.env.HONCHO_CLOUD_API_URL ?? DEFAULT_CLOUD_API_URL;
+	if (apiKey) {
+		const cloud = await fn(cloudUrl, apiKey, "cloud");
+		if (cloud.status !== "skipped") return { ...cloud, endpoint: "cloud" };
+	}
+	const selfhost = await fn(selfhostUrl, apiKey, "selfhost");
+	return { ...selfhost, endpoint: "selfhost" };
+}
+
+/**
+ * Seed the run-scoped valid facts into a PERSISTENT Honcho workspace and recall a memory preamble that is
+ * injected into the graded prompt. The workspace is NOT deleted so a post-session readback can verify it.
+ */
+export async function runHonchoGradedMemory(opts: {
+	scopeId: string;
+	facts: string[];
+	recallQuery: string;
+}): Promise<HonchoGradedMemoryResult> {
+	return runHonchoAcrossEndpoints<HonchoGradedMemoryResult>(async (apiUrl, apiKey) => {
+		const scope: AdapterScope = { id: opts.scopeId };
+		const adapter = new HonchoAdapter({ apiUrl, apiKey, timeoutMs: Number(process.env.HONCHO_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS) });
+		const base = {
+			schema_version: "memswe-honcho-graded-memory.v0.1" as const,
+			created_at: new Date().toISOString(),
+			api_url: apiUrl,
+			scope_id: opts.scopeId,
+			workspace_id: sanitizeHonchoId(opts.scopeId),
+			seeded_fact_count: opts.facts.length,
+		};
+		try {
+			await adapter.reset(scope);
+			if (opts.facts.length > 0) {
+				await adapter.seed(opts.facts.map((content) => ({ scope, operation: "write" as const, content, metadata: { graded: true } })));
+			}
+			let recallOutput = "";
+			const deadline = Date.now() + Number(process.env.HONCHO_RECALL_TIMEOUT_MS ?? DEFAULT_RECALL_TIMEOUT_MS);
+			do {
+				const result = await adapter.run({ scope, prompt: opts.recallQuery });
+				recallOutput = result.output ?? "";
+				if (recallOutput.trim()) break;
+				await delay(Number(process.env.HONCHO_RECALL_POLL_MS ?? DEFAULT_RECALL_POLL_MS));
+			} while (Date.now() <= deadline);
+			const trimmed = recallOutput.trim();
+			const preamble = trimmed ? `## Memory from prior sessions (Honcho)\n\n${trimmed}` : undefined;
+			return { ...base, status: "ready", recall_output: trimmed || null, preamble };
+		} catch (caught) {
+			const message = caught instanceof Error ? caught.message : String(caught);
+			if (isUnavailable(message)) {
+				return {
+					...base,
+					status: "skipped",
+					recall_output: null,
+					error: { message, guidance: "Honcho unreachable (set HONCHO_API_URL for self-host or HONCHO_API_KEY for cloud); graded honcho memory not seeded." },
+				};
+			}
+			return {
+				...base,
+				status: "failed",
+				recall_output: null,
+				error: { message, guidance: "Honcho reachable but graded seed/recall failed; inspect the normalized trace before using this condition." },
+			};
+		}
+	});
+}
+
+/**
+ * After the graded session, write the agent's conclusion back into the SAME per-run workspace, then assert
+ * peer representation + conclusion/derived data are recallable. The workspace is NOT reset or deleted.
+ */
+export async function readbackHonchoWorkspace(opts: {
+	scopeId: string;
+	conclusionText: string;
+}): Promise<HonchoReadbackResult> {
+	return runHonchoAcrossEndpoints<HonchoReadbackResult>(async (apiUrl, apiKey) => {
+		const scope: AdapterScope = { id: opts.scopeId };
+		const adapter = new HonchoAdapter({ apiUrl, apiKey, timeoutMs: Number(process.env.HONCHO_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS) });
+		const needle = opts.conclusionText.slice(0, 48);
+		const base = {
+			schema_version: "memswe-honcho-readback.v0.1" as const,
+			created_at: new Date().toISOString(),
+			api_url: apiUrl,
+			scope_id: opts.scopeId,
+			workspace_id: sanitizeHonchoId(opts.scopeId),
+			peer_id: PEER_ID,
+		};
+		try {
+			// Do NOT reset — that would wipe the graded memory. Write the conclusion/derived data back.
+			await adapter.seed([{ scope, operation: "write" as const, content: opts.conclusionText, metadata: { conclusion: true } }]);
+			let recallSample = "";
+			const deadline = Date.now() + Number(process.env.HONCHO_RECALL_TIMEOUT_MS ?? DEFAULT_RECALL_TIMEOUT_MS);
+			do {
+				const result = await adapter.run({ scope, prompt: "What has the agent concluded and changed in this session?" });
+				recallSample = result.output ?? "";
+				if (recallSample.includes(needle)) break;
+				await delay(Number(process.env.HONCHO_RECALL_POLL_MS ?? DEFAULT_RECALL_POLL_MS));
+			} while (Date.now() <= deadline);
+			await adapter.observe(); // exercise the peer representation endpoint
+			const representation = await adapter.run({ scope, prompt: "Describe everything known about this project and the peer's prior facts." });
+			const representationSample = representation.output ?? "";
+			const recall_non_empty = recallSample.trim().length > 0;
+			const representation_non_empty = representationSample.trim().length > 0;
+			const conclusion_present = recallSample.includes(needle) || representationSample.includes(needle);
+			const status = recall_non_empty && representation_non_empty && conclusion_present ? "passed" : "failed";
+			return {
+				...base,
+				status,
+				representation_non_empty,
+				recall_non_empty,
+				conclusion_present,
+				recall_sample: recallSample.trim() || null,
+				representation_sample: representationSample.trim() || null,
+			};
+		} catch (caught) {
+			const message = caught instanceof Error ? caught.message : String(caught);
+			const failure = isUnavailable(message) ? ("skipped" as const) : ("failed" as const);
+			return {
+				...base,
+				status: failure,
+				representation_non_empty: false,
+				recall_non_empty: false,
+				conclusion_present: false,
+				recall_sample: null,
+				representation_sample: null,
+				error: {
+					message,
+					guidance: failure === "skipped" ? "Honcho unreachable at readback." : "Honcho reachable but readback assertions failed; inspect the trace.",
+				},
+			};
+		}
+	});
+}
+
 /** Run the retain→recall→delete→miss lifecycle against ONE Honcho endpoint. */
 async function runHonchoLifecycleSmokeAgainst(apiUrl: string, apiKey: string | undefined): Promise<HonchoSmokeResult> {
 	const timestamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
