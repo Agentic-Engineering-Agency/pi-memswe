@@ -30,6 +30,9 @@ import {
 	validFactsBeforeSession,
 	type VerifierSpec,
 	writePatchArtifacts,
+	collectPriorTranscripts,
+	renderFullContextPreamble,
+	type PriorTranscript,
 } from "./memswe-smoke-runner-lib.ts";
 import { createMemSweTrace, isMemSweOtlpExportConfigured, memoryLatencySummary, traceCompletenessSummary } from "./memswe-trace-scaffold.ts";
 import { runFilesystemLifecycleSmoke } from "./memswe-adapter-filesystem.ts";
@@ -112,6 +115,7 @@ type AgentRunResult = {
 	total_tokens?: number;
 	input_tokens?: number;
 	output_tokens?: number;
+	cost_usd?: number;
 };
 
 type RunRecord = {
@@ -188,7 +192,8 @@ function parseConditionId(value: string | undefined): MemoryConditionId {
 }
 
 function parseAgentMode(value: string | undefined): AgentMode {
-	const agentMode = value ?? "faux-text";
+	const val = value === "faux" ? "faux-text" : value;
+	const agentMode = val ?? "faux-text";
 	if (AGENT_MODE_IDS.includes(agentMode as AgentMode)) return agentMode as AgentMode;
 	throw new Error(`Invalid --agent-mode=${agentMode}; expected one of ${AGENT_MODE_IDS.join(", ")}`);
 }
@@ -315,9 +320,17 @@ Do not call tools. Do not edit files. Acknowledge the task prompt and stop.`,
 	};
 }
 
-async function runFauxAgentSession(task: TaskYaml, taskDir: string, workdir: string, artifactsDir: string): Promise<AgentRunResult> {
+async function runFauxAgentSession(
+	task: TaskYaml,
+	taskDir: string,
+	workdir: string,
+	artifactsDir: string,
+	priorTranscripts?: PriorTranscript[],
+): Promise<AgentRunResult> {
 	const gradedSession = resolveGradedSession(task);
-	const prompt = await readFile(join(taskDir, gradedSession.prompt_ref!), "utf8");
+	const gradedPrompt = await readFile(join(taskDir, gradedSession.prompt_ref!), "utf8");
+	const preamble = priorTranscripts ? renderFullContextPreamble(priorTranscripts) : "";
+	const prompt = preamble ? `${preamble}\n${gradedPrompt}` : gradedPrompt;
 	const fauxProvider = registerFauxProvider();
 	const model = fauxProvider.getModel();
 	fauxProvider.setResponses([
@@ -396,9 +409,17 @@ async function runFauxAgentSession(task: TaskYaml, taskDir: string, workdir: str
 	};
 }
 
-async function runRealAgentSession(task: TaskYaml, taskDir: string, workdir: string, artifactsDir: string): Promise<AgentRunResult> {
+async function runRealAgentSession(
+	task: TaskYaml,
+	taskDir: string,
+	workdir: string,
+	artifactsDir: string,
+	priorTranscripts?: PriorTranscript[],
+): Promise<AgentRunResult> {
 	const gradedSession = resolveGradedSession(task);
-	const prompt = await readFile(join(taskDir, gradedSession.prompt_ref!), "utf8");
+	const gradedPrompt = await readFile(join(taskDir, gradedSession.prompt_ref!), "utf8");
+	const preamble = priorTranscripts ? renderFullContextPreamble(priorTranscripts) : "";
+	const prompt = preamble ? `${preamble}\n${gradedPrompt}` : gradedPrompt;
 	if (process.env.MEMSWE_ALLOW_REAL_MODEL !== "1") {
 		throw new Error("--agent-mode=real requires MEMSWE_ALLOW_REAL_MODEL=1 to confirm intentional real-model spend.");
 	}
@@ -418,6 +439,38 @@ async function runRealAgentSession(task: TaskYaml, taskDir: string, workdir: str
 
 	let model = modelRegistry.find(providerId, modelId);
 	if (!model && baseUrl) {
+		// Default pricing for the configured model so per_task_cost_usd is non-zero
+		// even when the MEMSWE_LLM_*_COST_PER_M env vars are unset. Env vars still
+		// take priority. Defaults are DeepSeek-V4-Flash pricing (USD per 1M tokens).
+		const DEFAULT_MODEL_PRICING: Record<string, { input: number; output: number }> = {
+			"azure/deepseek-v4-flash": { input: 0.14, output: 0.28 },
+		};
+		const defaultPricing = DEFAULT_MODEL_PRICING[modelId];
+
+		const envInput = process.env.MEMSWE_LLM_INPUT_COST_PER_M;
+		const envOutput = process.env.MEMSWE_LLM_OUTPUT_COST_PER_M;
+		const envCacheRead = process.env.MEMSWE_LLM_CACHE_READ_COST_PER_M;
+		const envCacheWrite = process.env.MEMSWE_LLM_CACHE_WRITE_COST_PER_M;
+
+		const inputCost = envInput !== undefined ? Number(envInput) : defaultPricing?.input ?? 0;
+		const outputCost = envOutput !== undefined ? Number(envOutput) : defaultPricing?.output ?? 0;
+		const cacheReadCost = envCacheRead ? Number(envCacheRead) : 0;
+		const cacheWriteCost = envCacheWrite ? Number(envCacheWrite) : 0;
+
+		const isValidInput = Number.isFinite(inputCost) && inputCost >= 0;
+		const isValidOutput = Number.isFinite(outputCost) && outputCost >= 0;
+
+		const pricingSource = envInput !== undefined || envOutput !== undefined
+			? "environment variables"
+			: defaultPricing
+				? `baked default for ${modelId}`
+				: "none";
+		if (isValidInput && isValidOutput && (envInput !== undefined || envOutput !== undefined || defaultPricing)) {
+			console.log(`[Cost Registry] Registering model ${modelId} with pricing: ${inputCost} input, ${outputCost} output per 1M tokens (source: ${pricingSource}).`);
+		} else {
+			console.warn(`[Cost Registry] WARNING: No pricing config for ${modelId}. Set MEMSWE_LLM_INPUT_COST_PER_M and MEMSWE_LLM_OUTPUT_COST_PER_M to enable non-zero cost tracking. Defaulting to 0.`);
+		}
+
 		modelRegistry.registerProvider(providerId, {
 			baseUrl,
 			apiKey,
@@ -428,7 +481,12 @@ async function runRealAgentSession(task: TaskYaml, taskDir: string, workdir: str
 				api: "openai-completions" as unknown as import("@earendil-works/pi-ai").Api,
 				reasoning: false,
 				input: ["text"],
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				cost: {
+					input: isValidInput ? inputCost : 0,
+					output: isValidOutput ? outputCost : 0,
+					cacheRead: Number.isFinite(cacheReadCost) && cacheReadCost >= 0 ? cacheReadCost : 0,
+					cacheWrite: Number.isFinite(cacheWriteCost) && cacheWriteCost >= 0 ? cacheWriteCost : 0,
+				},
 				contextWindow: 128000,
 				maxTokens: 8192,
 			}],
@@ -492,10 +550,12 @@ async function runRealAgentSession(task: TaskYaml, taskDir: string, workdir: str
 	// input_tokens follows the established convention (usage.input + usage.cacheRead).
 	let input_tokens = 0;
 	let output_tokens = 0;
+	let cost_usd = 0;
 	for (const message of assistantMessages) {
 		if (message.stopReason === "error" || message.stopReason === "aborted") continue;
 		input_tokens += message.usage.input + message.usage.cacheRead;
 		output_tokens += message.usage.output;
+		cost_usd += message.usage.cost?.total ?? 0;
 	}
 	const total_tokens = input_tokens + output_tokens;
 
@@ -514,12 +574,20 @@ async function runRealAgentSession(task: TaskYaml, taskDir: string, workdir: str
 		total_tokens,
 		input_tokens,
 		output_tokens,
+		cost_usd,
 	};
 }
 
-async function runAgentSession(agentMode: AgentMode, task: TaskYaml, taskDir: string, workdir: string, artifactsDir: string): Promise<AgentRunResult> {
-	if (agentMode === "real" || agentMode === "minimax-real") return runRealAgentSession(task, taskDir, workdir, artifactsDir);
-	return runFauxAgentSession(task, taskDir, workdir, artifactsDir);
+async function runAgentSession(
+	agentMode: AgentMode,
+	task: TaskYaml,
+	taskDir: string,
+	workdir: string,
+	artifactsDir: string,
+	priorTranscripts?: PriorTranscript[],
+): Promise<AgentRunResult> {
+	if (agentMode === "real" || agentMode === "minimax-real") return runRealAgentSession(task, taskDir, workdir, artifactsDir, priorTranscripts);
+	return runFauxAgentSession(task, taskDir, workdir, artifactsDir, priorTranscripts);
 }
 
 function verifierCommands(task: TaskYaml, includeHidden: boolean): VerifierCommand[] {
@@ -594,9 +662,9 @@ async function copyVerifierFiles(taskDir: string, workdir: string, task: TaskYam
 	}
 }
 
-async function prepareCondition(conditionId: MemoryConditionId, task: TaskYaml, workdir: string, artifactsDir: string): Promise<ConditionPrepareResult> {
+async function prepareCondition(conditionId: MemoryConditionId, task: TaskYaml, workdir: string, artifactsDir: string, taskDir: string): Promise<ConditionPrepareResult> {
 	const isProvider = (PROVIDER_CONDITION_IDS as readonly string[]).includes(conditionId);
-	if (conditionId !== "no_memory" && conditionId !== "repository_docs" && !isProvider) {
+	if (conditionId !== "no_memory" && conditionId !== "repository_docs" && conditionId !== "full_context" && !isProvider) {
 		throw new Error(`Memory condition ${conditionId} is not implemented`);
 	}
 	const conditionResultPath = join(artifactsDir, "condition-result.json");
@@ -611,6 +679,14 @@ async function prepareCondition(conditionId: MemoryConditionId, task: TaskYaml, 
 		await writeFile(docsPath, docs);
 		await writeFile(docsArtifactPath, docs);
 		artifactPaths.repository_docs = docsArtifactPath;
+	} else if (conditionId === "full_context") {
+		// full_context: replay prior non-graded session transcripts before graded prompt.
+		// memory_system = full_context so run-record validates.
+		memorySystem = "full_context";
+		const transcriptPath = join(artifactsDir, "full-context-transcript.json");
+		const prior = collectPriorTranscripts(task, taskDir);
+		await writeFile(transcriptPath, `${JSON.stringify(prior, null, "	")}\n`);
+		artifactPaths.full_context_transcript = transcriptPath;
 	} else if (isProvider) {
 		// Run the adapter lifecycle smoke for this provider and record it. A cloud provider with no
 		// API key returns status "skipped" (not "failed"); either way memory_system is the provider id
@@ -674,11 +750,14 @@ async function runTask(
 	await copyVerifierFiles(taskDir, workdir, parsed, includeHidden);
 	await mkdir(artifactsDir, { recursive: true });
 	const memorySpan = trace.startSpan("memory", "memory.prepare", { condition_id: conditionId });
-	const conditionResult = await prepareCondition(conditionId, parsed, repoDir, artifactsDir);
+	const conditionResult = await prepareCondition(conditionId, parsed, repoDir, artifactsDir, taskDir);
 	memorySpan.end();
 	await initializeWorktreeBaseline(repoDir);
 
-	const agentResult = skipFauxAgent ? undefined : await runAgentSession(agentMode, parsed, taskDir, repoDir, artifactsDir);
+	const agentSessionStart = performance.now();
+	const priorTranscripts = conditionId === "full_context" ? collectPriorTranscripts(parsed, taskDir) : undefined;
+	const agentResult = skipFauxAgent ? undefined : await runAgentSession(agentMode, parsed, taskDir, repoDir, artifactsDir, priorTranscripts);
+	const agentSessionLatencyMs = skipFauxAgent ? 0 : Math.round(performance.now() - agentSessionStart);
 	if (agentResult) {
 		console.log(
 			`${agentResult.agent_mode} agent session ${agentResult.session_id} finished with ${agentResult.status}; captured ${agentResult.event_count} event(s).`,
@@ -725,9 +804,16 @@ async function runTask(
 	scoringSpan.end();
 	benchmarkSpan.end();
 	const traceArtifact = trace.toArtifact();
-	await trace.flush();
 	const traceCompleteness = traceCompletenessSummary(traceArtifact);
 	const memoryLatency = memoryLatencySummary(traceArtifact);
+	const traceFlush = await trace
+		.flush()
+		.then((result) => ({ ok: true, error: null as string | null, result }))
+		.catch((error: unknown) => ({
+			ok: false,
+			error: error instanceof Error ? error.message : String(error),
+			result: null,
+		}));
 	const traceArtifactPath = join(artifactsDir, "memswe-trace.json");
 	const record: RunRecord = {
 		run_id: runId,
@@ -766,8 +852,8 @@ async function runTask(
 		metric_vector: {
 			task_success_visible: !agentPassed ? null : visible.length === 0 ? null : passed(visible) / visible.length,
 			task_success_hidden: !agentPassed ? null : hidden.length === 0 ? null : passed(hidden) / hidden.length,
-			per_task_cost_usd: 0,
-			end_to_end_task_latency_ms: results.reduce((sum, result) => sum + result.duration_ms, 0),
+			per_task_cost_usd: agentResult?.cost_usd ?? 0,
+			end_to_end_task_latency_ms: agentSessionLatencyMs + results.reduce((sum, result) => sum + result.duration_ms, 0),
 			memory_retrieval_latency_p50_ms: memoryLatency.p50_ms,
 			memory_retrieval_latency_p95_ms: memoryLatency.p95_ms,
 			total_tokens: agentResult?.total_tokens ?? 0,
@@ -799,7 +885,7 @@ async function runTask(
 			})),
 			{
 				id: "otel_trace_complete",
-				outcome: trace.enabled ? (traceCompleteness.complete ? "pass" : "fail") : "not_evaluable",
+				outcome: trace.enabled ? (traceCompleteness.complete && traceFlush.ok ? "pass" : "fail") : "not_evaluable",
 				severity: "diagnostic",
 				evidence_ref: trace.enabled ? traceArtifactPath : null,
 			},
@@ -823,6 +909,12 @@ async function runTask(
 	await writeFile(traceArtifactPath, `${JSON.stringify(traceArtifact, null, "	")}\n`);
 	const runRecordPath = join(artifactsDir, "run-record.json");
 	await writeFile(runRecordPath, `${JSON.stringify(record, null, "	")}\n`);
+	if (trace.enabled && !traceFlush.ok) {
+		console.warn(
+			`MemSWE OTLP flush failed (run-record written, marking run non-green): ${traceFlush.error}`,
+		);
+		process.exitCode = 1;
+	}
 	console.log(`Wrote ${relative(REPO_ROOT, runRecordPath)}`);
 	return { taskId, allPassed, runRecordPath };
 }
