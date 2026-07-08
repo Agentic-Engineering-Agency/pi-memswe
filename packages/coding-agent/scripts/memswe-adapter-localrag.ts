@@ -16,6 +16,7 @@ import type {
 	NormalizedTrace,
 	NormalizedTraceEvent,
 } from "./memswe-adapter-contract.ts";
+import { mintRunScopeId } from "./memswe-adapter-contract.ts";
 
 // Local RAG baseline (AMB-67): a deterministic, resettable lexical retrieval index (BM25) over
 // chunked seeded content. NO external service / NO embeddings by default — so the lifecycle smoke
@@ -247,7 +248,8 @@ export class LocalRagAdapter implements AmsAdapter {
 
 export async function runLocalRagLifecycleSmoke(): Promise<LocalRagSmokeResult> {
 	const indexRoot = process.env.MEMSWE_LOCALRAG_INDEX_DIR ?? join(RUNS_ROOT, "localrag-index");
-	const scope: AdapterScope = { id: `memswe-localrag-smoke-${Date.now()}` };
+	const timestamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
+	const scope: AdapterScope = { id: mintRunScopeId("localrag-smoke", timestamp) };
 	const adapter = new LocalRagAdapter({ indexRoot });
 	const predicates: Record<string, boolean> = {};
 	try {

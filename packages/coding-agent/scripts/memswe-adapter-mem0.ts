@@ -18,6 +18,7 @@ import type {
 	NormalizedTraceError,
 	NormalizedTraceEvent,
 } from "./memswe-adapter-contract.ts";
+import { mintRunScopeId } from "./memswe-adapter-contract.ts";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "../../..");
@@ -234,9 +235,11 @@ export class Mem0Adapter implements AmsAdapter {
 
 export async function runMem0LifecycleSmoke(): Promise<Mem0SmokeResult> {
 	const apiUrl = process.env.MEM0_API_URL;
+	const timestamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
+	const runScopeId = mintRunScopeId("mem0-smoke", timestamp);
 	const scope: AdapterScope = {
-		id: `memswe-mem0-smoke-${Date.now()}`,
-		metadata: { run_id: "memswe-mem0-lifecycle-smoke", agent_id: "memswe" },
+		id: runScopeId,
+		metadata: { run_id: runScopeId, agent_id: "memswe" },
 	};
 	if (!apiUrl) return skippedSmoke(scope, "MEM0_API_URL is not set");
 

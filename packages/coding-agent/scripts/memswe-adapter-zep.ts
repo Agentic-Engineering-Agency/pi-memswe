@@ -17,6 +17,7 @@ import type {
 	NormalizedTrace,
 	NormalizedTraceEvent,
 } from "./memswe-adapter-contract.ts";
+import { mintRunScopeId } from "./memswe-adapter-contract.ts";
 
 // Zep Cloud graph-memory adapter (AMB-66). Zep CE was deprecated Apr 2025 → Cloud API only.
 // Mirrors the Graphiti adapter (async graph + poll-until-recall) — kept SEPARATE from Graphiti per
@@ -284,7 +285,8 @@ export class ZepAdapter implements AmsAdapter {
 export async function runZepLifecycleSmoke(): Promise<ZepSmokeResult> {
 	const apiKey = process.env.ZEP_API_KEY;
 	const apiUrl = process.env.ZEP_API_URL ?? DEFAULT_API_URL;
-	const scope: AdapterScope = { id: `memswe-zep-smoke-${Date.now()}` };
+	const timestamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
+	const scope: AdapterScope = { id: mintRunScopeId("zep-smoke", timestamp) };
 	// Zep is Cloud-only: without a key the condition is unavailable → skipped (not failed).
 	if (!apiKey) return skippedSmoke(scope, "ZEP_API_KEY is not set");
 

@@ -17,7 +17,7 @@ The supplied Langfuse keys map to project **Hermes** under org **Agentic Enginee
 On `pi-memswe` main, the harness already has the trace-export foundation:
 
 - `memswe-trace-scaffold.ts` contains a flag-gated OTLP/HTTP-JSON exporter.
-- `resolveMemSweOtlpExporterConfig` reads `LANGFUSE_OTLP_ENDPOINT`, falling back to `OTEL_EXPORTER_OTLP_ENDPOINT`.
+- `resolveMemSweOtlpExporterConfig` reads `LANGFUSE_OTLP_ENDPOINT`, falling back to `OTEL_EXPORTER_OTLP_ENDPOINT`, then deriving the endpoint from `LANGFUSE_BASE_URL` (appending `/api/public/otel`) when neither explicit endpoint is set.
 - `resolveLangfuseBasicAuthHeader` builds `Basic base64(LANGFUSE_PUBLIC_KEY:LANGFUSE_SECRET_KEY)`.
 - `exportOtlpTrace` POSTs OTLP JSON to `/api/public/otel/v1/traces` using `resourceSpans` and `scopeSpans`.
 - Trace IDs are 16 bytes and span IDs are 8 bytes, matching OTLP expectations.
@@ -35,9 +35,9 @@ It calls `trace.flush()` per run, which is the right place to make export reliab
 
 ## 2. Gaps
 
-1. **Not every run exports.** Trace export is opt-in behind `--otel-trace`; unattended runs without the flag produce no Langfuse trace.
-2. **Live ingestion needs an explicit acceptance test.** The exporter exists, and the endpoint is reachable, but the harness should verify that a real run creates a visible trace in Hermes.
-3. **Runtime environment is incomplete.** Deploy, CI, and benchmark-run environments do not yet have `LANGFUSE_OTLP_ENDPOINT`, `LANGFUSE_PUBLIC_KEY`, and `LANGFUSE_SECRET_KEY` wired consistently.
+1. **Auto-export when configured.** `traceEnabled = !--no-otel-trace && (--otel-trace || isMemSweOtlpExportConfigured())`. Because `isMemSweOtlpExportConfigured()` now returns true whenever `LANGFUSE_BASE_URL` (or an explicit endpoint) is set, runs in the Paperclip runtime export automatically without `--otel-trace`. Pass `--no-otel-trace` to opt out; in environments with no Langfuse env vars, traces are still skipped.
+2. **Live ingestion is verified.** A real OTLP POST against the deployed Langfuse (`https://langfuse.agenticengineering.lat/api/public/otel/v1/traces`) with Basic auth returns `200`/`validKey`, and the emitted trace is visible via `/api/public/traces` (confirmed 2026-07-07).
+3. **Runtime environment now resolves from `LANGFUSE_BASE_URL`.** The Paperclip runtime injects `LANGFUSE_BASE_URL`, `LANGFUSE_PUBLIC_KEY`, and `LANGFUSE_SECRET_KEY` but not `LANGFUSE_OTLP_ENDPOINT`; the exporter now derives the OTLP endpoint from `LANGFUSE_BASE_URL` so export works without a separately-wired endpoint var. Explicit `LANGFUSE_OTLP_ENDPOINT`/`OTEL_EXPORTER_OTLP_ENDPOINT` still override.
 4. **Spans are too coarse for benchmark analysis.** Current spans do not include per-model token counts, cost, detailed memory operations, or adapter-level boundaries for Mem0, Letta, Graphiti, and future memory systems.
 5. **Run records are not trace-linked.** A run artifact cannot currently point a reader from `trace_store_ref` to the corresponding Langfuse trace URL.
 6. **Routing is single-project only.** The near-term target is Hermes, but future multi-condition or multi-tenant runs may need per-org/project routing.
@@ -119,6 +119,7 @@ Notes:
 
 - `LANGFUSE_OTLP_ENDPOINT` is preferred by the harness.
 - `OTEL_EXPORTER_OTLP_ENDPOINT` remains a fallback endpoint variable.
+- `LANGFUSE_BASE_URL` (e.g. `https://langfuse.agenticengineering.lat/`) is the final fallback: the exporter appends `/api/public/otel` (then `/v1/traces`) to derive the endpoint. This is what the Paperclip runtime injects.
 - The Authorization header is `Basic base64(LANGFUSE_PUBLIC_KEY:LANGFUSE_SECRET_KEY)`.
 - Never write key values to run records, logs, public showcase data, or repository files.
 

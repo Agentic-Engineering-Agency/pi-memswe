@@ -43,7 +43,7 @@ export type MemSweTraceExportResult =
 
 type MemSweOtlpExporterConfig = {
 	endpoint: string;
-	endpointSource: "LANGFUSE_OTLP_ENDPOINT" | "OTEL_EXPORTER_OTLP_ENDPOINT";
+	endpointSource: "LANGFUSE_OTLP_ENDPOINT" | "OTEL_EXPORTER_OTLP_ENDPOINT" | "LANGFUSE_BASE_URL";
 	authorizationHeader?: string;
 };
 
@@ -196,6 +196,16 @@ function resolveMemSweOtlpExporterConfig(env = process.env): MemSweOtlpExporterC
 	if (langfuseEndpoint) return { endpoint: langfuseEndpoint, endpointSource: "LANGFUSE_OTLP_ENDPOINT", authorizationHeader };
 	const otelEndpoint = parseEndpoint(env.OTEL_EXPORTER_OTLP_ENDPOINT);
 	if (otelEndpoint) return { endpoint: otelEndpoint, endpointSource: "OTEL_EXPORTER_OTLP_ENDPOINT", authorizationHeader };
+	// Fallback: derive the OTLP sink from the Langfuse host. The Paperclip runtime injects the
+	// Langfuse keys under a PAPERCLIP_LANGFUSE_* prefix but never LANGFUSE_OTLP_ENDPOINT nor a
+	// dedicated Langfuse base-URL var; Langfuse's OTLP receiver lives at `${host}/api/public/otel`
+	// (parseEndpoint appends `/v1/traces`). PAPERCLIP_HOST_URL is only trusted as the Langfuse host
+	// when Langfuse credentials are present (authorizationHeader defined), since otherwise it may be
+	// the Paperclip app/API host and would misroute traces.
+	const langfuseBaseUrl =
+		env.LANGFUSE_BASE_URL ?? env.PAPERCLIP_LANGFUSE_BASE_URL ?? (authorizationHeader ? env.PAPERCLIP_HOST_URL : undefined);
+	const baseUrlEndpoint = parseEndpoint(langfuseOtelEndpointFromBaseUrl(langfuseBaseUrl));
+	if (baseUrlEndpoint) return { endpoint: baseUrlEndpoint, endpointSource: "LANGFUSE_BASE_URL", authorizationHeader };
 	return null;
 }
 
@@ -204,8 +214,8 @@ export function isMemSweOtlpExportConfigured(env: NodeJS.ProcessEnv = process.en
 }
 
 function resolveLangfuseBasicAuthHeader(env: NodeJS.ProcessEnv): string | undefined {
-	const publicKey = env.LANGFUSE_PUBLIC_KEY;
-	const secretKey = env.LANGFUSE_SECRET_KEY;
+	const publicKey = env.LANGFUSE_PUBLIC_KEY ?? env.PAPERCLIP_LANGFUSE_PUBLIC_KEY;
+	const secretKey = env.LANGFUSE_SECRET_KEY ?? env.PAPERCLIP_LANGFUSE_SECRET_KEY;
 	if (!publicKey || !secretKey) return undefined;
 	return `Basic ${Buffer.from(`${publicKey}:${secretKey}`).toString("base64")}`;
 }
@@ -218,6 +228,18 @@ function parseEndpoint(endpoint: string | undefined): string | null {
 	if (url.pathname.endsWith("/v1/traces")) return url.toString();
 	url.pathname = `${url.pathname.replace(/\/+$/u, "")}/v1/traces`;
 	return url.toString();
+}
+
+// Derive the Langfuse OTLP endpoint from a bare host base URL. Returns undefined when unset so
+// parseEndpoint short-circuits. `${host}/api/public/otel` is Langfuse's OTLP receiver; the trailing
+// `/v1/traces` is added by parseEndpoint. If the base URL already points at the otel receiver
+// (contains `/api/public/otel`), it is passed through unchanged.
+function langfuseOtelEndpointFromBaseUrl(baseUrl: string | undefined): string | undefined {
+	if (!baseUrl) return undefined;
+	const trimmed = baseUrl.trim().replace(/\/+$/u, "");
+	if (trimmed.length === 0) return undefined;
+	if (trimmed.includes("/api/public/otel")) return trimmed;
+	return `${trimmed}/api/public/otel`;
 }
 
 async function exportOtlpTrace(

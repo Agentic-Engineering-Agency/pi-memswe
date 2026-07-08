@@ -23,21 +23,46 @@ import {
 	initializeWorktreeBaseline,
 	preparePythonEnvironment,
 	scrubSecretEnv,
+	type SessionSpec,
 	type TaskYaml,
 	validateRunRecordAgainstSchema,
 	validateRunRecordShape,
 	validFactsBeforeSession,
+	type VerifierSpec,
 	writePatchArtifacts,
 } from "./memswe-smoke-runner-lib.ts";
 import { createMemSweTrace, isMemSweOtlpExportConfigured, memoryLatencySummary, traceCompletenessSummary } from "./memswe-trace-scaffold.ts";
+import { runFilesystemLifecycleSmoke } from "./memswe-adapter-filesystem.ts";
+import { runLocalRagLifecycleSmoke } from "./memswe-adapter-localrag.ts";
+import { runZepLifecycleSmoke } from "./memswe-adapter-zep.ts";
+import { runSupermemoryLifecycleSmoke } from "./memswe-adapter-supermemory.ts";
+import { runHonchoLifecycleSmoke } from "./memswe-adapter-honcho.ts";
+import { runGraphitiLifecycleSmoke } from "./memswe-adapter-graphiti.ts";
+import { runMem0LifecycleSmoke } from "./memswe-adapter-mem0.ts";
+import { runLettaLifecycleSmoke } from "./memswe-adapter-letta.ts";
 
 const DEFAULT_TASK_ID = "repo-gamma-invoice-export-001";
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "../../..");
 const MEMSWE_ROOT = resolve(REPO_ROOT, "../memswe");
 const RUNS_ROOT = join(REPO_ROOT, ".memswe-runs");
-const MEMORY_CONDITION_IDS = ["no_memory", "full_context", "repository_docs", "hindsight"] as const;
-const AGENT_MODE_IDS = ["faux-text", "minimax-real"] as const;
+const PROVIDER_CONDITION_IDS = ["filesystem", "localrag", "zep", "supermemory", "honcho", "graphiti", "mem0", "letta"] as const;
+const MEMORY_CONDITION_IDS = ["no_memory", "full_context", "repository_docs", "hindsight", ...PROVIDER_CONDITION_IDS] as const;
+// AGE-184: each provider condition runs the corresponding AMS adapter lifecycle smoke so run-records
+// carry condition.memory_system = <provider> and baseline_kind = adapter_lifecycle_smoke. Cloud
+// adapters self-report status "skipped" (not "failed") when their API key is unset, so wiring is
+// verifiable without every vendor credential present.
+const PROVIDER_LIFECYCLE_SMOKES: Record<(typeof PROVIDER_CONDITION_IDS)[number], () => Promise<{ status: string; predicate_results?: Record<string, boolean>; export?: unknown }>> = {
+	filesystem: runFilesystemLifecycleSmoke,
+	localrag: runLocalRagLifecycleSmoke,
+	zep: runZepLifecycleSmoke,
+	supermemory: runSupermemoryLifecycleSmoke,
+	honcho: runHonchoLifecycleSmoke,
+	graphiti: runGraphitiLifecycleSmoke,
+	mem0: runMem0LifecycleSmoke,
+	letta: runLettaLifecycleSmoke,
+};
+const AGENT_MODE_IDS = ["faux-text", "real", "minimax-real"] as const;
 
 type VerifierKind = "visible" | "hidden" | "protected";
 type MemoryConditionId = (typeof MEMORY_CONDITION_IDS)[number];
@@ -84,6 +109,9 @@ type AgentRunResult = {
 	model_id: string;
 	provider_id: string;
 	base_url: string;
+	total_tokens?: number;
+	input_tokens?: number;
+	output_tokens?: number;
 };
 
 type RunRecord = {
@@ -163,6 +191,15 @@ function parseAgentMode(value: string | undefined): AgentMode {
 	const agentMode = value ?? "faux-text";
 	if (AGENT_MODE_IDS.includes(agentMode as AgentMode)) return agentMode as AgentMode;
 	throw new Error(`Invalid --agent-mode=${agentMode}; expected one of ${AGENT_MODE_IDS.join(", ")}`);
+}
+
+function parseRepetitionIndex(value: string | undefined): number {
+	if (value === undefined) return 1;
+	const n = Number.parseInt(value, 10);
+	if (!Number.isInteger(n) || n < 1) {
+		throw new Error(`Invalid --repetition-index=${value}; expected a positive integer (1-based)`);
+	}
+	return n;
 }
 
 function isTaskYaml(value: unknown): value is TaskYaml {
@@ -359,22 +396,47 @@ async function runFauxAgentSession(task: TaskYaml, taskDir: string, workdir: str
 	};
 }
 
-async function runMinimaxAgentSession(task: TaskYaml, taskDir: string, workdir: string, artifactsDir: string): Promise<AgentRunResult> {
+async function runRealAgentSession(task: TaskYaml, taskDir: string, workdir: string, artifactsDir: string): Promise<AgentRunResult> {
 	const gradedSession = resolveGradedSession(task);
 	const prompt = await readFile(join(taskDir, gradedSession.prompt_ref!), "utf8");
 	if (process.env.MEMSWE_ALLOW_REAL_MODEL !== "1") {
-		throw new Error("--agent-mode=minimax-real requires MEMSWE_ALLOW_REAL_MODEL=1 to confirm intentional real-model spend.");
+		throw new Error("--agent-mode=real requires MEMSWE_ALLOW_REAL_MODEL=1 to confirm intentional real-model spend.");
 	}
-	const apiKey = process.env.MINIMAX_API_KEY ?? process.env.HINDSIGHT_API_LLM_API_KEY;
+
+	const providerId = process.env.MEMSWE_LLM_PROVIDER ?? "omniroute";
+	const modelId = process.env.MEMSWE_LLM_MODEL ?? "azure/deepseek-v4-flash";
+	const apiKey = process.env.MEMSWE_LLM_API_KEY ?? process.env.OMNIROUTE_API_KEY;
+	const baseUrl = process.env.MEMSWE_LLM_BASE_URL ?? process.env.OMNIROUTE_BASE_URL;
+
 	if (!apiKey) {
-		throw new Error("--agent-mode=minimax-real requires MINIMAX_API_KEY in the environment; HINDSIGHT_API_LLM_API_KEY is accepted for local smoke reuse.");
+		throw new Error("--agent-mode=real requires MEMSWE_LLM_API_KEY or OMNIROUTE_API_KEY in the environment.");
 	}
 
 	const authStorage = AuthStorage.inMemory();
-	authStorage.setRuntimeApiKey("minimax", apiKey);
+	authStorage.setRuntimeApiKey(providerId, apiKey);
 	const modelRegistry = ModelRegistry.inMemory(authStorage);
-	const model = modelRegistry.find("minimax", "MiniMax-M3");
-	if (!model) throw new Error("MiniMax-M3 model is not registered for provider minimax");
+
+	let model = modelRegistry.find(providerId, modelId);
+	if (!model && baseUrl) {
+		modelRegistry.registerProvider(providerId, {
+			baseUrl,
+			apiKey,
+			api: "openai-completions" as unknown as import("@earendil-works/pi-ai").Api,
+			models: [{
+				id: modelId,
+				name: modelId,
+				api: "openai-completions" as unknown as import("@earendil-works/pi-ai").Api,
+				reasoning: false,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 128000,
+				maxTokens: 8192,
+			}],
+		});
+		model = modelRegistry.find(providerId, modelId);
+	}
+
+	if (!model) throw new Error(`Model ${modelId} is not registered for provider ${providerId}`);
 
 	const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false } });
 	const events: AgentSessionEvent[] = [];
@@ -407,9 +469,36 @@ async function runMinimaxAgentSession(task: TaskYaml, taskDir: string, workdir: 
 		session.dispose();
 	}
 
-	const assistantMessages = session.messages.filter((message) => message.role === "assistant");
+	const assistantMessages = session.messages.filter(
+		(message): message is Extract<typeof message, { role: "assistant" }> => message.role === "assistant",
+	);
 	const finalResponse = messageText(assistantMessages.at(-1));
 	await writeFile(join(artifactsDir, "agent-final-response.txt"), `${finalResponse}\n`);
+
+	// Surface model-side failures (e.g. 404 "No active credentials") as run errors.
+	// session.prompt() does not throw on these; the failure lands on the assistant
+	// message's stopReason/errorMessage. Without this, zero-inference failures look green.
+	if (status !== "errored") {
+		const failed = assistantMessages.find(
+			(message) => message.stopReason === "error" || message.stopReason === "aborted",
+		);
+		if (failed) {
+			status = "errored";
+			error = failed.errorMessage ?? `Model stopped with reason "${failed.stopReason}"`;
+		}
+	}
+
+	// Propagate real token usage into the result so metric_vector is not stuck at 0.
+	// input_tokens follows the established convention (usage.input + usage.cacheRead).
+	let input_tokens = 0;
+	let output_tokens = 0;
+	for (const message of assistantMessages) {
+		if (message.stopReason === "error" || message.stopReason === "aborted") continue;
+		input_tokens += message.usage.input + message.usage.cacheRead;
+		output_tokens += message.usage.output;
+	}
+	const total_tokens = input_tokens + output_tokens;
+
 	return {
 		session_id: gradedSession.session_id!,
 		prompt_ref: gradedSession.prompt_ref!,
@@ -418,15 +507,18 @@ async function runMinimaxAgentSession(task: TaskYaml, taskDir: string, workdir: 
 		message_count: session.messages.length,
 		status,
 		error,
-		agent_mode: "minimax-real",
+		agent_mode: "real",
 		model_id: model.id,
 		provider_id: model.provider,
 		base_url: model.baseUrl,
+		total_tokens,
+		input_tokens,
+		output_tokens,
 	};
 }
 
 async function runAgentSession(agentMode: AgentMode, task: TaskYaml, taskDir: string, workdir: string, artifactsDir: string): Promise<AgentRunResult> {
-	if (agentMode === "minimax-real") return runMinimaxAgentSession(task, taskDir, workdir, artifactsDir);
+	if (agentMode === "real" || agentMode === "minimax-real") return runRealAgentSession(task, taskDir, workdir, artifactsDir);
 	return runFauxAgentSession(task, taskDir, workdir, artifactsDir);
 }
 
@@ -503,11 +595,13 @@ async function copyVerifierFiles(taskDir: string, workdir: string, task: TaskYam
 }
 
 async function prepareCondition(conditionId: MemoryConditionId, task: TaskYaml, workdir: string, artifactsDir: string): Promise<ConditionPrepareResult> {
-	if (conditionId !== "no_memory" && conditionId !== "repository_docs") {
+	const isProvider = (PROVIDER_CONDITION_IDS as readonly string[]).includes(conditionId);
+	if (conditionId !== "no_memory" && conditionId !== "repository_docs" && !isProvider) {
 		throw new Error(`Memory condition ${conditionId} is not implemented`);
 	}
 	const conditionResultPath = join(artifactsDir, "condition-result.json");
 	const artifactPaths: Record<string, string> = { condition_result: conditionResultPath };
+	let memorySystem: string | null = null;
 	if (conditionId === "repository_docs") {
 		const docsPath = join(workdir, "docs/agent-project-memory/memswe-facts.md");
 		const docsArtifactPath = join(artifactsDir, "repository-docs/memswe-facts.md");
@@ -517,10 +611,19 @@ async function prepareCondition(conditionId: MemoryConditionId, task: TaskYaml, 
 		await writeFile(docsPath, docs);
 		await writeFile(docsArtifactPath, docs);
 		artifactPaths.repository_docs = docsArtifactPath;
+	} else if (isProvider) {
+		// Run the adapter lifecycle smoke for this provider and record it. A cloud provider with no
+		// API key returns status "skipped" (not "failed"); either way memory_system is the provider id
+		// so the run-record reflects the condition actually exercised.
+		const smoke = await PROVIDER_LIFECYCLE_SMOKES[conditionId as (typeof PROVIDER_CONDITION_IDS)[number]]();
+		const smokePath = join(artifactsDir, `provider-smoke-${conditionId}.json`);
+		await writeFile(smokePath, `${JSON.stringify(smoke, null, "	")}\n`);
+		artifactPaths.provider_smoke = smokePath;
+		memorySystem = conditionId;
 	}
 	const result: ConditionPrepareResult = {
 		condition_id: conditionId,
-		memory_system: null,
+		memory_system: memorySystem,
 		artifact_paths: artifactPaths,
 	};
 	await writeFile(conditionResultPath, `${JSON.stringify(result, null, "	")}\n`);
@@ -552,6 +655,7 @@ async function runTask(
 	conditionId: MemoryConditionId,
 	agentMode: AgentMode,
 	traceEnabled: boolean,
+	repetitionIndex: number,
 ): Promise<TaskRunResult> {
 	const taskDir = join(MEMSWE_ROOT, "tasks", taskId);
 	const taskYamlPath = join(taskDir, "task.yaml");
@@ -632,9 +736,9 @@ async function runTask(
 		condition: {
 			condition_id: conditionResult.condition_id,
 			memory_system: conditionResult.memory_system,
-			baseline_kind: "verifier_only_smoke",
+			baseline_kind: conditionResult.memory_system ? "adapter_lifecycle_smoke" : "verifier_only_smoke",
 			model_id: agentResult ? `${agentResult.provider_id}/${agentResult.model_id}` : "none/verifier-only",
-			repetition_index: 1,
+			repetition_index: repetitionIndex,
 			k: 1,
 		},
 		session_results: [
@@ -660,15 +764,15 @@ async function runTask(
 		],
 		...(reward ? { reward } : {}),
 		metric_vector: {
-			task_success_visible: visible.length === 0 ? null : passed(visible) / visible.length,
-			task_success_hidden: hidden.length === 0 ? null : passed(hidden) / hidden.length,
+			task_success_visible: !agentPassed ? null : visible.length === 0 ? null : passed(visible) / visible.length,
+			task_success_hidden: !agentPassed ? null : hidden.length === 0 ? null : passed(hidden) / hidden.length,
 			per_task_cost_usd: 0,
 			end_to_end_task_latency_ms: results.reduce((sum, result) => sum + result.duration_ms, 0),
 			memory_retrieval_latency_p50_ms: memoryLatency.p50_ms,
 			memory_retrieval_latency_p95_ms: memoryLatency.p95_ms,
-			total_tokens: 0,
-			input_tokens: 0,
-			output_tokens: 0,
+			total_tokens: agentResult?.total_tokens ?? 0,
+			input_tokens: agentResult?.input_tokens ?? 0,
+			output_tokens: agentResult?.output_tokens ?? 0,
 			thinking_tokens: null,
 			context_tokens_required: null,
 			session_bootstrap_information: null,
@@ -728,10 +832,11 @@ async function main(): Promise<void> {
 	const skipFauxAgent = hasFlag("--skip-faux-agent");
 	const conditionId = parseConditionId(getArgumentValue("--condition"));
 	const agentMode = parseAgentMode(getArgumentValue("--agent-mode"));
+	const repetitionIndex = parseRepetitionIndex(getArgumentValue("--repetition-index"));
 	const traceEnabled = !hasFlag("--no-otel-trace") && (hasFlag("--otel-trace") || isMemSweOtlpExportConfigured());
 	const timestamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
 	if (!hasFlag("--all-tasks")) {
-		const result = await runTask(getArgumentValue("--task-id") ?? DEFAULT_TASK_ID, timestamp, includeHidden, skipFauxAgent, conditionId, agentMode, traceEnabled);
+		const result = await runTask(getArgumentValue("--task-id") ?? DEFAULT_TASK_ID, timestamp, includeHidden, skipFauxAgent, conditionId, agentMode, traceEnabled, repetitionIndex);
 		if (!result.allPassed) process.exitCode = 1;
 		return;
 	}
@@ -746,7 +851,7 @@ async function main(): Promise<void> {
 	let hasFailure = false;
 	for (const taskId of await discoverTaskIds(MEMSWE_ROOT)) {
 		try {
-			const result = await runTask(taskId, timestamp, includeHidden, skipFauxAgent, conditionId, agentMode, traceEnabled);
+			const result = await runTask(taskId, timestamp, includeHidden, skipFauxAgent, conditionId, agentMode, traceEnabled, repetitionIndex);
 			const status = result.allPassed ? "passed" : "failed";
 			hasFailure = hasFailure || !result.allPassed;
 			taskResults.push({

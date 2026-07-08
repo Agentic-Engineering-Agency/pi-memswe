@@ -5,14 +5,23 @@ import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
 import { type FactSpec, type TaskYaml, validFactsBeforeSession } from "./memswe-smoke-runner-lib.ts";
+import { mintRunScopeId } from "./memswe-adapter-contract.ts";
 
 const SCRIPT_DIR = resolve(fileURLToPath(import.meta.url), "..");
 const REPO_ROOT = resolve(SCRIPT_DIR, "../../..");
 const MEMSWE_ROOT = resolve(REPO_ROOT, "../memswe");
 const RUNS_ROOT = join(REPO_ROOT, ".memswe-runs");
 const API_URL = process.env.HINDSIGHT_API_URL ?? "http://127.0.0.1:8888";
-const BANK_ID = process.env.HINDSIGHT_BANK_ID ?? "memswe-repo-gamma-local-smoke";
 const TASK_ID = "repo-gamma-invoice-export-001";
+const RUN_TIMESTAMP = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
+const BANK_ID = process.env.HINDSIGHT_BANK_ID ?? `memswe-repo-gamma-local-smoke-${mintRunScopeId(TASK_ID, RUN_TIMESTAMP)}`;
+function resolveGradedSession(task: TaskYaml): { session_id?: string; prompt_ref?: string; graded?: boolean } {
+	const sessions = task.memswe?.session_sequence ?? [];
+	const graded = sessions.find((session) => session.graded);
+	const fallback = sessions.at(-1);
+	if (!graded && !fallback) throw new Error("Task has no session_sequence entries");
+	return graded ?? fallback;
+}
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
@@ -104,7 +113,7 @@ async function loadTaskFacts(): Promise<FactSpec[]> {
 	const task = parse(await readFile(taskPath, "utf8")) as TaskYaml;
 	const taskId = task.harbor?.metadata?.task_id;
 	if (taskId !== TASK_ID) throw new Error(`Loaded unexpected task ${taskId ?? "<missing>"} from ${taskPath}`);
-	return validFactsBeforeSession(task, resolveGradedSessionId(task));
+	return validFactsBeforeSession(task, resolveGradedSession(task).session_id!);
 }
 
 function factMetadata(fact: FactSpec): Record<string, string> {

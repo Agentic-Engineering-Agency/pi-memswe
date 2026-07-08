@@ -279,16 +279,118 @@ describe("memswe OTel trace scaffold", () => {
 		}
 	});
 
+	test("derives OTLP sink from PAPERCLIP_HOST_URL when Langfuse keys are present", async () => {
+		const originalFetch = globalThis.fetch;
+		const originalLangfuseEndpoint = process.env.LANGFUSE_OTLP_ENDPOINT;
+		const originalOtelEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+		const originalLangfuseBaseUrl = process.env.LANGFUSE_BASE_URL;
+		const originalPaperclipLangfuseBaseUrl = process.env.PAPERCLIP_LANGFUSE_BASE_URL;
+		const originalPaperclipHostUrl = process.env.PAPERCLIP_HOST_URL;
+		const originalPublicKey = process.env.LANGFUSE_PUBLIC_KEY;
+		const originalSecretKey = process.env.LANGFUSE_SECRET_KEY;
+		const originalPaperclipPublicKey = process.env.PAPERCLIP_LANGFUSE_PUBLIC_KEY;
+		const originalPaperclipSecretKey = process.env.PAPERCLIP_LANGFUSE_SECRET_KEY;
+		const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
+
+		delete process.env.LANGFUSE_OTLP_ENDPOINT;
+		delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+		delete process.env.LANGFUSE_BASE_URL;
+		delete process.env.PAPERCLIP_LANGFUSE_BASE_URL;
+		delete process.env.LANGFUSE_PUBLIC_KEY;
+		delete process.env.LANGFUSE_SECRET_KEY;
+		process.env.PAPERCLIP_HOST_URL = "https://langfuse.example.test";
+		process.env.PAPERCLIP_LANGFUSE_PUBLIC_KEY = "pk-paperclip";
+		process.env.PAPERCLIP_LANGFUSE_SECRET_KEY = "sk-paperclip";
+		globalThis.fetch = fetchMock;
+
+		try {
+			const trace = createEnabledMemSweTrace("run-host-fallback", 1000);
+			trace.startSpan("benchmark", "benchmark.run", {}, 1000).end(1010);
+
+			await trace.flush();
+
+			const firstCall = (fetchMock.mock.calls as unknown as Array<[string, RequestInit]>)[0];
+			if (!firstCall) throw new Error("Expected OTLP fetch call");
+			expect(firstCall[0]).toBe("https://langfuse.example.test/api/public/otel/v1/traces");
+			expect((firstCall[1] as RequestInit).headers).toEqual({
+				authorization: `Basic ${Buffer.from("pk-paperclip:sk-paperclip").toString("base64")}`,
+				"content-type": "application/json",
+				"memswe-otlp-endpoint-source": "LANGFUSE_BASE_URL",
+			});
+		} finally {
+			globalThis.fetch = originalFetch;
+			restoreEnv("LANGFUSE_OTLP_ENDPOINT", originalLangfuseEndpoint);
+			restoreEnv("OTEL_EXPORTER_OTLP_ENDPOINT", originalOtelEndpoint);
+			restoreEnv("LANGFUSE_BASE_URL", originalLangfuseBaseUrl);
+			restoreEnv("PAPERCLIP_LANGFUSE_BASE_URL", originalPaperclipLangfuseBaseUrl);
+			restoreEnv("PAPERCLIP_HOST_URL", originalPaperclipHostUrl);
+			restoreEnv("LANGFUSE_PUBLIC_KEY", originalPublicKey);
+			restoreEnv("LANGFUSE_SECRET_KEY", originalSecretKey);
+			restoreEnv("PAPERCLIP_LANGFUSE_PUBLIC_KEY", originalPaperclipPublicKey);
+			restoreEnv("PAPERCLIP_LANGFUSE_SECRET_KEY", originalPaperclipSecretKey);
+		}
+	});
+
+	test("ignores PAPERCLIP_HOST_URL as OTLP sink when Langfuse keys are absent", async () => {
+		const originalFetch = globalThis.fetch;
+		const originalLangfuseEndpoint = process.env.LANGFUSE_OTLP_ENDPOINT;
+		const originalOtelEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+		const originalLangfuseBaseUrl = process.env.LANGFUSE_BASE_URL;
+		const originalPaperclipLangfuseBaseUrl = process.env.PAPERCLIP_LANGFUSE_BASE_URL;
+		const originalPaperclipHostUrl = process.env.PAPERCLIP_HOST_URL;
+		const originalPublicKey = process.env.LANGFUSE_PUBLIC_KEY;
+		const originalSecretKey = process.env.LANGFUSE_SECRET_KEY;
+		const originalPaperclipPublicKey = process.env.PAPERCLIP_LANGFUSE_PUBLIC_KEY;
+		const originalPaperclipSecretKey = process.env.PAPERCLIP_LANGFUSE_SECRET_KEY;
+		const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
+
+		delete process.env.LANGFUSE_OTLP_ENDPOINT;
+		delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+		delete process.env.LANGFUSE_BASE_URL;
+		delete process.env.PAPERCLIP_LANGFUSE_BASE_URL;
+		delete process.env.LANGFUSE_PUBLIC_KEY;
+		delete process.env.LANGFUSE_SECRET_KEY;
+		delete process.env.PAPERCLIP_LANGFUSE_PUBLIC_KEY;
+		delete process.env.PAPERCLIP_LANGFUSE_SECRET_KEY;
+		process.env.PAPERCLIP_HOST_URL = "https://paperclip-app.example.test";
+		globalThis.fetch = fetchMock;
+
+		try {
+			const trace = createEnabledMemSweTrace("run-no-keys", 1000);
+			trace.startSpan("benchmark", "benchmark.run", {}, 1000).end(1010);
+
+			await expect(trace.flush()).resolves.toEqual({ status: "skipped", reason: "endpoint_unset" });
+			expect(fetchMock).not.toHaveBeenCalled();
+		} finally {
+			globalThis.fetch = originalFetch;
+			restoreEnv("LANGFUSE_OTLP_ENDPOINT", originalLangfuseEndpoint);
+			restoreEnv("OTEL_EXPORTER_OTLP_ENDPOINT", originalOtelEndpoint);
+			restoreEnv("LANGFUSE_BASE_URL", originalLangfuseBaseUrl);
+			restoreEnv("PAPERCLIP_LANGFUSE_BASE_URL", originalPaperclipLangfuseBaseUrl);
+			restoreEnv("PAPERCLIP_HOST_URL", originalPaperclipHostUrl);
+			restoreEnv("LANGFUSE_PUBLIC_KEY", originalPublicKey);
+			restoreEnv("LANGFUSE_SECRET_KEY", originalSecretKey);
+			restoreEnv("PAPERCLIP_LANGFUSE_PUBLIC_KEY", originalPaperclipPublicKey);
+			restoreEnv("PAPERCLIP_LANGFUSE_SECRET_KEY", originalPaperclipSecretKey);
+		}
+	});
+
 	test("skips OTLP export when endpoint env is unset", async () => {
 		const originalFetch = globalThis.fetch;
 		const originalLangfuseEndpoint = process.env.LANGFUSE_OTLP_ENDPOINT;
 		const originalOtelEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+		const originalLangfuseBaseUrl = process.env.LANGFUSE_BASE_URL;
+		const originalPaperclipLangfuseBaseUrl = process.env.PAPERCLIP_LANGFUSE_BASE_URL;
+		const originalPaperclipHostUrl = process.env.PAPERCLIP_HOST_URL;
 		const originalPublicKey = process.env.LANGFUSE_PUBLIC_KEY;
 		const originalSecretKey = process.env.LANGFUSE_SECRET_KEY;
 		const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
 
 		delete process.env.LANGFUSE_OTLP_ENDPOINT;
 		delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+		delete process.env.LANGFUSE_BASE_URL;
+		delete process.env.PAPERCLIP_LANGFUSE_BASE_URL;
+		delete process.env.PAPERCLIP_HOST_URL;
 		process.env.LANGFUSE_PUBLIC_KEY = "pk-test";
 		process.env.LANGFUSE_SECRET_KEY = "sk-test";
 		globalThis.fetch = fetchMock;
@@ -303,6 +405,9 @@ describe("memswe OTel trace scaffold", () => {
 			globalThis.fetch = originalFetch;
 			restoreEnv("LANGFUSE_OTLP_ENDPOINT", originalLangfuseEndpoint);
 			restoreEnv("OTEL_EXPORTER_OTLP_ENDPOINT", originalOtelEndpoint);
+			restoreEnv("LANGFUSE_BASE_URL", originalLangfuseBaseUrl);
+			restoreEnv("PAPERCLIP_LANGFUSE_BASE_URL", originalPaperclipLangfuseBaseUrl);
+			restoreEnv("PAPERCLIP_HOST_URL", originalPaperclipHostUrl);
 			restoreEnv("LANGFUSE_PUBLIC_KEY", originalPublicKey);
 			restoreEnv("LANGFUSE_SECRET_KEY", originalSecretKey);
 		}
