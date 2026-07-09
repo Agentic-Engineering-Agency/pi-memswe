@@ -31,9 +31,14 @@ npm --prefix packages/coding-agent run memswe:smoke
 npm --prefix packages/coding-agent run memswe:smoke -- --task-id=repo-gamma-invoice-export-001
 npm --prefix packages/coding-agent run memswe:smoke -- --all-tasks --continue-on-task-failure
 npm --prefix packages/coding-agent run memswe:smoke -- --condition=no_memory
+npm --prefix packages/coding-agent run memswe:smoke -- --condition=full_context --repetition-index=1
 ```
 
-The smoke runner uses the deterministic faux provider and does not call real model/provider APIs. It copies MemSWE fixtures into temporary worktrees, keeps hidden/protected verifier assets harness-side, emits artifacts under `.memswe-runs/<timestamp>/<task-id>/`, and writes `suite-summary.json` for all-task runs. See [packages/coding-agent/README.md](packages/coding-agent/README.md#memswe--pap-membench-harness) and [packages/coding-agent/docs/memswe-benchmark-status.html](packages/coding-agent/docs/memswe-benchmark-status.html) for current command, artifact, and readiness details.
+The runner defaults to the deterministic faux provider, but it also has an explicitly gated real-model mode and condition adapters. It copies MemSWE fixtures into temporary worktrees, keeps hidden/protected verifier assets harness-side, and emits run records and supporting artifacts under `.memswe-runs/`.
+
+At committed HEAD `7dca44e1`, the project includes an evidence export for a 240-cell matrix: 10 canonical tasks x 6 scoped conditions (`no_memory`, `full_context`, `hindsight`, `honcho`, `zep`, and `supermemory`) x 4 repetitions. All 240 exported cells report `task_success_visible=1` and `otel_trace_complete=pass`. These are deliberately narrow claims: visible success is saturated and does not distinguish the conditions; hidden success was not established; task-specific memory trace predicates remain unsupported by the current runner; and RAM was not measured. Provider lifecycle execution also does not, by itself, prove that recalled provider memory influenced the graded agent session.
+
+The fixed-runtime rule remains central: comparisons must hold model, prompt template, tools, fixture visibility, verifier rules, repetition policy, and scoring constant while changing only the memory condition/provider. See [packages/coding-agent/README.md](packages/coding-agent/README.md#memswe--pap-membench-harness), the [benchmark status page](packages/coding-agent/docs/memswe-benchmark-status.html), and the [PAP evidence index](docs/pap-sunday-2026-07-05/README.md) for current commands, artifacts, limitations, and charts.
 
 * **[@earendil-works/pi-coding-agent](packages/coding-agent)**: Interactive coding agent CLI
 * **[@earendil-works/pi-agent-core](packages/agent)**: Agent runtime with tool calling and state management

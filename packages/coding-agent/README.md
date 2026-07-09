@@ -102,57 +102,64 @@ Then just talk to pi. By default, pi gives the model four tools: `read`, `write`
 
 ## MemSWE / PAP-membench Harness
 
-This fork is the fixed pi runtime/harness for MemSWE experiments. The benchmark source of truth is the sibling `../memswe` repository: task descriptors, fixtures, session prompts, fact lifecycle, verifier policy, trace predicates, and run-record schema belong there. This package supplies the current runner around pi's coding-agent SDK and must keep the runtime fixed while memory conditions/providers vary.
+This fork is the fixed pi runtime/harness for MemSWE experiments. The benchmark source of truth is the sibling `../memswe` repository: task descriptors, fixtures, session prompts, fact lifecycle, verifier policy, trace predicates, and run-record schema belong there. This package owns execution, condition adapters, trace capture, verifier orchestration, and run artifacts; changes to benchmark identity belong in `memswe`.
 
-The current smoke runner uses the faux provider, disables agent tools, and does not call real model/provider APIs. It is meant to audit harness plumbing, verifier isolation, artifact emission, and condition setup before real-model pilots.
+The runner defaults to the deterministic faux provider. Real-model execution is available only through an explicit environment gate. A valid comparison must keep the model, prompt template, tools, fixture visibility, verifier rules, repetition policy, and scoring fixed while changing only the memory condition/provider.
 
 ### Commands
 
 Run from the `pi-memswe` repo root:
 
 ```bash
-# Default gamma smoke: repo-gamma-invoice-export-001, condition no_memory.
+# Default gamma plumbing smoke: repo-gamma-invoice-export-001, no_memory, rep 1.
 npm --prefix packages/coding-agent run memswe:smoke
 
 # Explicit task.
 npm --prefix packages/coding-agent run memswe:smoke -- --task-id=repo-gamma-invoice-export-001
 
-# Discover and run all MemSWE task descriptors, continuing after expected task failures.
+# Discover all sibling-repo task descriptors. This all-task path is faux-only.
 npm --prefix packages/coding-agent run memswe:smoke -- --all-tasks --continue-on-task-failure
 
-# Explicit condition.
-npm --prefix packages/coding-agent run memswe:smoke -- --condition=no_memory
+# Explicit condition and 1-based repetition index.
+npm --prefix packages/coding-agent run memswe:smoke -- --condition=full_context --repetition-index=1
 
-# Local Hindsight AMS/API smoke. This may call the configured local Hindsight LLM
-# provider during retain/recall and should only be run after explicit token approval.
+# Provider lifecycle probes. These may call configured services or their LLMs.
 npm --prefix packages/coding-agent run memswe:hindsight-smoke
+npm --prefix packages/coding-agent run memswe:honcho-smoke
+npm --prefix packages/coding-agent run memswe:zep-smoke
+npm --prefix packages/coding-agent run memswe:supermemory-smoke
 ```
 
-Condition support is intentionally narrow:
+Supported condition IDs are `no_memory`, `full_context`, `repository_docs`, `filesystem`, `localrag`, `zep`, `supermemory`, `honcho`, `graphiti`, `mem0`, `letta`, and `hindsight`.
 
-- `no_memory`: implemented default baseline for the faux/no-edit smoke runner.
-- `repository_docs`: scaffolded materialization path that writes `docs/agent-project-memory/memswe-facts.md` into the temp fixture and records the copied memory doc as an artifact. Treat it as harness plumbing, not a completed benchmark-ready local-memory baseline.
-- `full_context` and `hindsight`: accepted as known condition IDs, but fail closed as not implemented in the current runner.
-- Any other `--condition=...` value is invalid and exits before task execution.
+- `no_memory` injects no memory context.
+- `full_context` assembles declared seeded history and prior non-graded transcripts into a preamble for the graded prompt.
+- `repository_docs` writes valid facts to `docs/agent-project-memory/memswe-facts.md` in the temporary fixture. The agent still needs tools and instructions that can consume that file; materialization alone is not proof of use.
+- `honcho` has a graded path that seeds a run-scoped persistent workspace, injects a recall preamble, writes the graded conclusion back, and requires a positive readback gate.
+- The other provider conditions run their adapter lifecycle probe and record its export before the graded session. In the current runner, that lifecycle result is not generally injected into the graded prompt. Treat these cells as provider/harness integration evidence, not proof that provider recall improved task performance.
 
-`memswe:hindsight-smoke` is separate from `memswe:smoke`: it targets a local Hindsight API, creates/resets a smoke bank, seeds task-YAML-derived gamma facts, performs retain/recall/delete, and writes `hindsight-smoke-result.json`. Because retain/recall can use the configured Hindsight LLM provider, treat this as a real local AMS/API smoke that may incur model/token usage; do not run it without explicit token scope and approval.
-
-`memswe:smoke` defaults to deterministic `--agent-mode=faux-text`. A narrow real-model plumbing check is available as `--agent-mode=minimax-real`, which selects pi provider `minimax` / model `MiniMax-M3`, requires both `MEMSWE_ALLOW_REAL_MODEL=1` and `MINIMAX_API_KEY` in the environment, disables agent tools, and is blocked for `--all-tasks` to avoid accidental multi-task spend. Note the endpoint distinction: the Hindsight/LiteLLM smoke uses the MiniMax token-plan endpoint `https://api.minimax.io/v1`, while pi's built-in MiniMax-M3 entry uses the provider's Anthropic-compatible endpoint `https://api.minimax.io/anthropic`.
+`memswe:smoke` defaults to `--agent-mode=faux-text`. `--agent-mode=real` requires `MEMSWE_ALLOW_REAL_MODEL=1`, an API key (`MEMSWE_LLM_API_KEY` or `OMNIROUTE_API_KEY`), and the configured provider/model/base URL. `--agent-mode=minimax-real` is the older narrow MiniMax path. Real modes disable agent tools in this runner, and `--all-tasks` is intentionally restricted to faux mode to prevent accidental multi-task spend. Provider lifecycle probes can also incur service or model usage; run them only with explicit credential and token scope.
 
 `memswe:report` aggregates ignored `.memswe-runs/**` artifacts into a static browser report at `.memswe-runs/reports/latest/index.html`, with `run-summary.json` beside it. The report includes run records, verifier counts, suite summaries, Hindsight lifecycle smokes, and optional MiniMax/Hermes diagnostic review JSON files from `.memswe-runs/reviews/`.
 
-Expected behavior with the faux/no-edit runner:
+### Committed 240-cell evidence export
 
-- The default gamma smoke should pass visible/protected verification.
-- In `--all-tasks --continue-on-task-failure`, non-gamma tasks may fail verification explicitly because the faux agent acknowledges prompts and does not edit files. Those failures are expected evidence that verifiers are active, not evidence of real-model quality.
-- Hidden verifiers remain isolated and are skipped unless an explicit hidden-run policy is used. Do not expose hidden/protected verifier internals to the agent runtime.
+Commit `7dca44e1` adds charts and normalized CSV/JSON built from the latest run record for each of 10 canonical tasks x 6 scoped conditions (`no_memory`, `full_context`, `hindsight`, `honcho`, `zep`, `supermemory`) x 4 repetitions. The export reports:
+
+- 240/240 cells with `task_success_visible=1`;
+- 240/240 cells with `otel_trace_complete=pass`;
+- per-condition latency, cost, and token aggregates.
+
+Interpret these results narrowly. Visible success is at a 1.00 ceiling for every condition, so it cannot establish a memory-system advantage. Hidden verifiers were not part of the committed matrix evidence, `task_success_hidden` is therefore unsupported, and the runner emits benchmark-specific trace predicates as `not_evaluable`. `otel_trace_complete` only confirms the expected harness spans and successful trace flush. RAM is not recorded. The export also reports zero injected-memory share, so it cannot support utilization or provider-memory-attribution claims.
+
+The committed evidence is under [`docs/pap-sunday-2026-07-05/charts/`](../../docs/pap-sunday-2026-07-05/charts/). Generated `.memswe-runs/` data remains ignored.
 
 ### Artifacts
 
 Each task run writes artifacts under:
 
 ```text
-.memswe-runs/<timestamp>/<task-id>/
+.memswe-runs/<timestamp>/<task-id>-<condition-id>-r<repetition-index>/
 ```
 
 Important files:
@@ -164,10 +171,14 @@ Important files:
 - `verifier-results.json`: harness-side visible/protected verifier command results.
 - `skipped-hidden-verifiers.json`: hidden verifier metadata skipped by default.
 - `agent.patch`, `worktree-diff.patch`, `changed-files.json`: no-op patch artifacts for faux/no-edit runs; real-model pilots must persist real diffs here.
-- `condition-result.json`: selected memory condition and condition-specific artifact paths.
-- `repository-docs/memswe-facts.md`: only present for the `repository_docs` scaffold.
+- `condition-result.json`: selected memory condition, memory-system label, and condition-specific artifact paths.
+- `full-context-transcript.json`: prior transcript bundle for `full_context`.
+- `repository-docs/memswe-facts.md`: materialized valid facts for `repository_docs`.
+- `provider-smoke-<condition>.json`: lifecycle result for provider conditions other than the Honcho graded path.
+- `honcho-graded-memory.json` and `honcho-readback.json`: run-scoped seeded/recall and post-session readback evidence for Honcho.
+- `memswe-trace.json`: local trace artifact used by the `otel_trace_complete` diagnostic predicate.
 
-The Hindsight local smoke writes `.memswe-runs/<timestamp>/hindsight-local-smoke/hindsight-smoke-result.json` with request/response trace events, predicate results, and structured failure guidance. It is provider-readiness evidence only, not a MemSWE task score.
+Standalone provider smokes write provider-specific lifecycle artifacts. They are readiness evidence, not MemSWE task scores.
 
 The report generator writes `.memswe-runs/reports/<timestamp>/index.html` and refreshes `.memswe-runs/reports/latest/index.html`. Generated report artifacts stay ignored; commit the generator, not the reports.
 
@@ -181,7 +192,7 @@ The suite summary lists task IDs, pass/fail status, run-record path, failed phas
 
 ### Validation
 
-Use these checks after harness edits or docs updates that change command references:
+Use these checks after harness edits. Documentation-only changes can use link and static-content checks without running model/provider flows:
 
 ```bash
 # Targeted runner/helper tests, from packages/coding-agent.
@@ -193,7 +204,7 @@ cd ../..
 npm run check
 ```
 
-Do not run real model/provider pilots from this smoke path unless API-token scope, local trace readiness, and hidden/protected policy are explicitly approved.
+Do not run real model/provider pilots unless API-token scope, local trace readiness, and hidden/protected policy are explicitly approved. Never interpret visible-only success, provider setup, or a complete harness trace as hidden-test success or task-specific memory correctness.
 
 ---
 
