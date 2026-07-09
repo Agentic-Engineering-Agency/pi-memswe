@@ -1,5 +1,8 @@
 #!/usr/bin/env -S npx tsx
 
+/// <reference lib="esnext" />
+// esnext lib pulls in the Promise.withResolvers type under the repo's ES2022 base tsconfig lib.
+
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,8 +16,10 @@ const MEMSWE_ROOT = resolve(REPO_ROOT, "../memswe");
 const RUNS_ROOT = join(REPO_ROOT, ".memswe-runs");
 const API_URL = process.env.HINDSIGHT_API_URL ?? "http://127.0.0.1:8888";
 const TASK_ID = "repo-gamma-invoice-export-001";
-const RUN_TIMESTAMP = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
-const BANK_ID = process.env.HINDSIGHT_BANK_ID ?? `memswe-repo-gamma-local-smoke-${mintRunScopeId(TASK_ID, RUN_TIMESTAMP)}`;
+function mintBankId(): string {
+	const runTimestamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
+	return process.env.HINDSIGHT_BANK_ID ?? `memswe-repo-gamma-local-smoke-${mintRunScopeId(TASK_ID, runTimestamp)}`;
+}
 function resolveGradedSession(task: TaskYaml): { session_id?: string; prompt_ref?: string; graded?: boolean } {
 	const sessions = task.memswe?.session_sequence ?? [];
 	const graded = sessions.find((session) => session.graded);
@@ -76,20 +81,22 @@ async function requestJson(method: string, path: string, trace: TraceEvent[], bo
 	}
 }
 
-async function deleteBankIfPresent(trace: TraceEvent[]): Promise<void> {
+async function deleteBankIfPresent(bankId: string, trace: TraceEvent[]): Promise<void> {
 	// Hindsight returns success with deleted_count=0 for missing banks. Any HTTP/network
 	// failure here means reset did not complete; fail closed instead of risking a dirty bank.
-	await requestJson("DELETE", `/v1/default/banks/${BANK_ID}`, trace);
+	await requestJson("DELETE", `/v1/default/banks/${bankId}`, trace);
 }
 
-async function pollUntil(trace: TraceEvent[], label: string, predicate: (json: JsonValue) => boolean): Promise<JsonValue> {
+async function pollUntil(bankId: string, trace: TraceEvent[], label: string, predicate: (json: JsonValue) => boolean): Promise<JsonValue> {
 	const deadline = Date.now() + 60_000;
 	let last: JsonValue = null;
 	while (Date.now() < deadline) {
-		const response = await requestJson("GET", `/v1/default/banks/${BANK_ID}/memories/list?limit=100`, trace);
+		const response = await requestJson("GET", `/v1/default/banks/${bankId}/memories/list?limit=100`, trace);
 		last = response.json;
 		if (predicate(response.json)) return response.json;
-		await new Promise((resolvePoll) => setTimeout(resolvePoll, 2_000));
+		const { promise, resolve: resolvePoll } = Promise.withResolvers<void>();
+		setTimeout(resolvePoll, 2_000);
+		await promise;
 	}
 	throw new Error(`Timed out waiting for ${label}; last=${JSON.stringify(last)}`);
 }
@@ -128,16 +135,16 @@ function factMetadata(fact: FactSpec): Record<string, string> {
 	return metadata;
 }
 
-async function runSmoke(trace: TraceEvent[], predicateResults: Record<string, boolean>): Promise<SmokeResult> {
+async function runSmoke(bankId: string, trace: TraceEvent[], predicateResults: Record<string, boolean>): Promise<SmokeResult> {
 	const facts = await loadTaskFacts();
 	await requestJson("GET", "/health", trace);
-	await deleteBankIfPresent(trace);
-	await requestJson("PUT", `/v1/default/banks/${BANK_ID}`, trace, {
+	await deleteBankIfPresent(bankId, trace);
+	await requestJson("PUT", `/v1/default/banks/${bankId}`, trace, {
 		name: "MemSWE repo gamma local smoke",
 		retain_mission: "Retain only durable MemSWE task facts and codebase preferences.",
 		reflect_mission: "Recall MemSWE task facts for benchmark harness validation.",
 	});
-	await requestJson("POST", `/v1/default/banks/${BANK_ID}/memories`, trace, {
+	await requestJson("POST", `/v1/default/banks/${bankId}/memories`, trace, {
 		async: false,
 		items: facts.map((fact) => ({
 			content: fact.text!,
@@ -147,11 +154,11 @@ async function runSmoke(trace: TraceEvent[], predicateResults: Record<string, bo
 			metadata: factMetadata(fact),
 		})),
 	});
-	const listed = await pollUntil(trace, "retained gamma header fact", (json) =>
+	const listed = await pollUntil(bankId, trace, "retained gamma header fact", (json) =>
 		memoryTexts(json).some((text) => text.includes("invoice_id") || text.includes("customer_id")),
 	);
 	predicateResults.retain_visible = memoryTexts(listed).length > 0;
-	const recall = await requestJson("POST", `/v1/default/banks/${BANK_ID}/memories/recall`, trace, {
+	const recall = await requestJson("POST", `/v1/default/banks/${bankId}/memories/recall`, trace, {
 		query: "What is the current gamma invoice CSV export header, sort order, and public endpoint requirement?",
 		budget: "mid",
 		max_tokens: 1024,
@@ -161,16 +168,16 @@ async function runSmoke(trace: TraceEvent[], predicateResults: Record<string, bo
 	});
 	const recallJson = JSON.stringify(recall.json);
 	predicateResults.recall_mentions_gamma_fact = recallJson.includes("invoice") && recallJson.includes("created_at") && recallJson.includes("endpoint");
-	await requestJson("DELETE", `/v1/default/banks/${BANK_ID}/memories`, trace);
-	const afterDelete = await pollUntil(trace, "deleted memories", (json) => memoryTexts(json).length === 0);
+	await requestJson("DELETE", `/v1/default/banks/${bankId}/memories`, trace);
+	const afterDelete = await pollUntil(bankId, trace, "deleted memories", (json) => memoryTexts(json).length === 0);
 	predicateResults.delete_cleared_bank = memoryTexts(afterDelete).length === 0;
-	await deleteBankIfPresent(trace);
+	await deleteBankIfPresent(bankId, trace);
 	const passed = Object.values(predicateResults).every(Boolean);
 	return {
 		schema_version: "memswe-hindsight-smoke.v0.1",
 		created_at: new Date().toISOString(),
 		api_url: API_URL,
-		bank_id: BANK_ID,
+		bank_id: bankId,
 		status: passed ? "passed" : "failed",
 		trace,
 		predicate_results: predicateResults,
@@ -198,13 +205,14 @@ function failedPhase(trace: TraceEvent[]): string {
 }
 
 async function main(): Promise<void> {
+	const bankId = mintBankId();
 	const timestamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
 	const artifactsDir = join(RUNS_ROOT, timestamp, "hindsight-local-smoke");
 	const trace: TraceEvent[] = [];
 	const predicateResults: Record<string, boolean> = {};
 	await mkdir(artifactsDir, { recursive: true });
 	try {
-		const result = await runSmoke(trace, predicateResults);
+		const result = await runSmoke(bankId, trace, predicateResults);
 		await writeFile(join(artifactsDir, "hindsight-smoke-result.json"), `${JSON.stringify(result, null, "\t")}\n`);
 		console.log(`Wrote ${relative(REPO_ROOT, join(artifactsDir, "hindsight-smoke-result.json"))}`);
 		if (result.status !== "passed") process.exitCode = 1;
@@ -220,7 +228,7 @@ async function main(): Promise<void> {
 			schema_version: "memswe-hindsight-smoke.v0.1",
 			created_at: new Date().toISOString(),
 			api_url: API_URL,
-			bank_id: BANK_ID,
+			bank_id: bankId,
 			status: "failed",
 			trace,
 			predicate_results: predicateResults,
@@ -234,4 +242,44 @@ async function main(): Promise<void> {
 	}
 }
 
-await main();
+// AGE-195: hindsight provider lifecycle smoke, exported for the graded runner's PROVIDER_LIFECYCLE_SMOKES
+// map. Mirrors the cloud-adapter convention: an UNREACHABLE Hindsight server yields status "skipped"
+// (not "failed") so the condition wiring is verifiable without the local Hindsight service running, while a
+// reachable server that fails a predicate yields "failed". Bank id is minted per call for run isolation.
+export async function runHindsightLifecycleSmoke(): Promise<{
+	status: "passed" | "failed" | "skipped";
+	predicate_results: Record<string, boolean>;
+	export?: SmokeResult;
+}> {
+	const bankId = mintBankId();
+	const trace: TraceEvent[] = [];
+	const predicateResults: Record<string, boolean> = {};
+	try {
+		const result = await runSmoke(bankId, trace, predicateResults);
+		return { status: result.status, predicate_results: result.predicate_results, export: result };
+	} catch (caught) {
+		const message = caught instanceof Error ? caught.message : String(caught);
+		const phase = failedPhase(trace);
+		// Server unreachable → skip (matches provider-smoke convention that a missing service is
+		// "skipped", not "failed", so the run-record still reflects memory_system = hindsight). A predicate
+		// timeout means the server WAS reachable but a predicate failed → that stays "failed".
+		const unreachable = message === "fetch failed" || /ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ECONNRESET|ETIMEDOUT/i.test(message);
+		const status: "failed" | "skipped" = unreachable ? "skipped" : "failed";
+		const result: SmokeResult = {
+			schema_version: "memswe-hindsight-smoke.v0.1",
+			created_at: new Date().toISOString(),
+			api_url: API_URL,
+			bank_id: bankId,
+			status: "failed",
+			trace,
+			predicate_results: predicateResults,
+			error: { failed_phase: phase, message, guidance: failureGuidance(message, phase) },
+		};
+		return { status, predicate_results: predicateResults, export: result };
+	}
+}
+
+// Side-effect-free on import: only run the CLI smoke when executed directly, not when imported by the runner.
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+	await main();
+}

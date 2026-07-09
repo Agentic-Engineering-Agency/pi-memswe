@@ -45,14 +45,15 @@ import type { HonchoGradedMemoryResult } from "./memswe-adapter-honcho.ts";
 import { runGraphitiLifecycleSmoke } from "./memswe-adapter-graphiti.ts";
 import { runMem0LifecycleSmoke } from "./memswe-adapter-mem0.ts";
 import { runLettaLifecycleSmoke } from "./memswe-adapter-letta.ts";
+import { runHindsightLifecycleSmoke } from "./memswe-hindsight-smoke.ts";
 
 const DEFAULT_TASK_ID = "repo-gamma-invoice-export-001";
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "../../..");
 const MEMSWE_ROOT = resolve(REPO_ROOT, "../memswe");
 const RUNS_ROOT = join(REPO_ROOT, ".memswe-runs");
-const PROVIDER_CONDITION_IDS = ["filesystem", "localrag", "zep", "supermemory", "honcho", "graphiti", "mem0", "letta"] as const;
-const MEMORY_CONDITION_IDS = ["no_memory", "full_context", "repository_docs", "hindsight", ...PROVIDER_CONDITION_IDS] as const;
+const PROVIDER_CONDITION_IDS = ["filesystem", "localrag", "zep", "supermemory", "honcho", "graphiti", "mem0", "letta", "hindsight"] as const;
+const MEMORY_CONDITION_IDS = ["no_memory", "full_context", "repository_docs", ...PROVIDER_CONDITION_IDS] as const;
 // AGE-184: each provider condition runs the corresponding AMS adapter lifecycle smoke so run-records
 // carry condition.memory_system = <provider> and baseline_kind = adapter_lifecycle_smoke. Cloud
 // adapters self-report status "skipped" (not "failed") when their API key is unset, so wiring is
@@ -66,6 +67,7 @@ const PROVIDER_LIFECYCLE_SMOKES: Record<(typeof PROVIDER_CONDITION_IDS)[number],
 	graphiti: runGraphitiLifecycleSmoke,
 	mem0: runMem0LifecycleSmoke,
 	letta: runLettaLifecycleSmoke,
+	hindsight: runHindsightLifecycleSmoke,
 };
 const AGENT_MODE_IDS = ["faux-text", "real", "minimax-real"] as const;
 
