@@ -210,6 +210,15 @@ export function inferVerifierAssets(taskDir: string, workdir: string, task: Task
 					agentVisible: kind === "visible" && spec.agent_visible === true,
 				});
 			}
+			for (const verifierDir of verifierDirsFromCommand(spec.command ?? "")) {
+				if (!existsSync(join(taskDir, verifierDir))) continue;
+				assets.set(`${kind}:${verifierDir}`, {
+					kind,
+					source: join(taskDir, verifierDir),
+					destination: join(workdir, verifierDir),
+					agentVisible: false,
+				});
+			}
 		}
 	}
 
@@ -231,6 +240,12 @@ function verifierPathsFromCommand(command: string): string[] {
 	return [...command.matchAll(/(?:^|\s)(tests\/[A-Za-z0-9_./-]+\.(?:py|ts|tsx|js|jsx))(?:\:\:[^\s]+)?/g)].map(
 		(match) => match[1],
 	);
+}
+
+function verifierDirsFromCommand(command: string): string[] {
+	return [...command.matchAll(/(?:^|[;&|]\s*)cd\s+([A-Za-z0-9_.\/-]+)/g)]
+		.map((match) => match[1])
+		.filter((dir) => dir === "verifier" || dir.startsWith("verifier/"));
 }
 
 export async function initializeWorktreeBaseline(workdir: string): Promise<void> {
@@ -421,8 +436,10 @@ export type ModelPricing = {
  * authoritative price for that exact model id; unmapped models resolve to 0 (source "none").
  */
 export const DEFAULT_MODEL_PRICING: Record<string, { input: number; output: number }> = {
-	// DeepSeek-V4-Flash official pricing: input 0.14, output 0.28 per 1M tokens.
+	// DeepSeek-V4-Flash pricing used for corrected AGE-193 rollup/run-records: input 0.14, output 0.28 per 1M tokens.
 	"azure/deepseek-v4-flash": { input: 0.14, output: 0.28 },
+	"omniroute/azure-ai/DeepSeek-V4-Flash": { input: 0.14, output: 0.28 },
+	"azure-ai/DeepSeek-V4-Flash": { input: 0.14, output: 0.28 },
 };
 
 /**

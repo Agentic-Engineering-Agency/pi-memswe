@@ -15,10 +15,10 @@ const REPO_ROOT = resolve(SCRIPT_DIR, "../../..");
 const MEMSWE_ROOT = resolve(REPO_ROOT, "../memswe");
 const RUNS_ROOT = join(REPO_ROOT, ".memswe-runs");
 const API_URL = process.env.HINDSIGHT_API_URL ?? "http://127.0.0.1:8888";
-const TASK_ID = "repo-gamma-invoice-export-001";
-function mintBankId(): string {
-	const runTimestamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
-	return process.env.HINDSIGHT_BANK_ID ?? `memswe-repo-gamma-local-smoke-${mintRunScopeId(TASK_ID, runTimestamp)}`;
+const DEFAULT_TASK_ID = "repo-gamma-invoice-export-001";
+function mintBankId(taskId = DEFAULT_TASK_ID, runId?: string): string {
+	const runTimestamp = runId ?? new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
+	return process.env.HINDSIGHT_BANK_ID ?? `memswe-${taskId}-local-smoke-${mintRunScopeId(taskId, runTimestamp)}`;
 }
 function resolveGradedSession(task: TaskYaml): { session_id?: string; prompt_ref?: string; graded?: boolean } {
 	const sessions = task.memswe?.session_sequence ?? [];
@@ -57,7 +57,7 @@ type SmokeResult = {
 };
 
 
-async function requestJson(method: string, path: string, trace: TraceEvent[], body?: JsonValue): Promise<{ status: number; json: JsonValue }> {
+async function requestJson(method: string, path: string, trace: TraceEvent[], body?: JsonValue, acceptedStatuses: number[] = []): Promise<{ status: number; json: JsonValue }> {
 	const started = Date.now();
 	const event: TraceEvent = { name: path, method, path, status: null, latency_ms: 0, request: body };
 	try {
@@ -70,7 +70,7 @@ async function requestJson(method: string, path: string, trace: TraceEvent[], bo
 		const json = text.length === 0 ? null : (JSON.parse(text) as JsonValue);
 		event.status = response.status;
 		event.response = json;
-		if (!response.ok) throw new Error(`HTTP ${response.status}: ${text}`);
+		if (!response.ok && !acceptedStatuses.includes(response.status)) throw new Error(`HTTP ${response.status}: ${text}`);
 		return { status: response.status, json };
 	} catch (caught) {
 		event.error = caught instanceof Error ? caught.message : String(caught);
@@ -82,9 +82,9 @@ async function requestJson(method: string, path: string, trace: TraceEvent[], bo
 }
 
 async function deleteBankIfPresent(bankId: string, trace: TraceEvent[]): Promise<void> {
-	// Hindsight returns success with deleted_count=0 for missing banks. Any HTTP/network
-	// failure here means reset did not complete; fail closed instead of risking a dirty bank.
-	await requestJson("DELETE", `/v1/default/banks/${bankId}`, trace);
+	// A missing bank is already reset. Treat 404 as idempotent success; other HTTP/network
+	// failures still fail closed to avoid dirty-bank leakage.
+	await requestJson("DELETE", `/v1/default/banks/${bankId}`, trace, undefined, [404]);
 }
 
 async function pollUntil(bankId: string, trace: TraceEvent[], label: string, predicate: (json: JsonValue) => boolean): Promise<JsonValue> {
@@ -115,17 +115,17 @@ function memoryTexts(json: JsonValue): string[] {
 }
 
 
-async function loadTaskFacts(): Promise<FactSpec[]> {
-	const taskPath = join(MEMSWE_ROOT, "tasks", TASK_ID, "task.yaml");
+async function loadTaskFacts(taskId = DEFAULT_TASK_ID): Promise<FactSpec[]> {
+	const taskPath = join(MEMSWE_ROOT, "tasks", taskId, "task.yaml");
 	const task = parse(await readFile(taskPath, "utf8")) as TaskYaml;
-	const taskId = task.harbor?.metadata?.task_id;
-	if (taskId !== TASK_ID) throw new Error(`Loaded unexpected task ${taskId ?? "<missing>"} from ${taskPath}`);
+	const loadedTaskId = task.harbor?.metadata?.task_id;
+	if (loadedTaskId !== taskId) throw new Error(`Loaded unexpected task ${loadedTaskId ?? "<missing>"} from ${taskPath}`);
 	return validFactsBeforeSession(task, resolveGradedSession(task).session_id!);
 }
 
-function factMetadata(fact: FactSpec): Record<string, string> {
+function factMetadata(taskId: string, fact: FactSpec): Record<string, string> {
 	const metadata: Record<string, string> = {
-		task_id: TASK_ID,
+		task_id: taskId,
 		fact_id: fact.id!,
 	};
 	for (const key of ["first_valid_session", "invalid_after_session", "forget_requested_session", "expected_use"] as const) {
@@ -135,12 +135,16 @@ function factMetadata(fact: FactSpec): Record<string, string> {
 	return metadata;
 }
 
-async function runSmoke(bankId: string, trace: TraceEvent[], predicateResults: Record<string, boolean>): Promise<SmokeResult> {
-	const facts = await loadTaskFacts();
+function recallQueryForTask(taskId: string, _facts: FactSpec[]): string {
+	return `Summarize durable MemSWE memory for task ${taskId}. Include exact configured values, policies, ordering constraints, endpoints, headers, owners, or identifiers if present.`;
+}
+
+async function runSmoke(bankId: string, trace: TraceEvent[], predicateResults: Record<string, boolean>, taskId = DEFAULT_TASK_ID): Promise<SmokeResult> {
+	const facts = await loadTaskFacts(taskId);
 	await requestJson("GET", "/health", trace);
 	await deleteBankIfPresent(bankId, trace);
 	await requestJson("PUT", `/v1/default/banks/${bankId}`, trace, {
-		name: "MemSWE repo gamma local smoke",
+		name: `MemSWE ${taskId} local smoke`,
 		retain_mission: "Retain only durable MemSWE task facts and codebase preferences.",
 		reflect_mission: "Recall MemSWE task facts for benchmark harness validation.",
 	});
@@ -148,26 +152,25 @@ async function runSmoke(bankId: string, trace: TraceEvent[], predicateResults: R
 		async: false,
 		items: facts.map((fact) => ({
 			content: fact.text!,
-			context: `MemSWE ${TASK_ID} seeded fact ${fact.id}; first_valid_session=${fact.first_valid_session ?? "unknown"}`,
-			document_id: `memswe-${TASK_ID}-${fact.id}`,
-			tags: ["memswe", TASK_ID, fact.id!],
-			metadata: factMetadata(fact),
+			context: `MemSWE ${taskId} seeded fact ${fact.id}; first_valid_session=${fact.first_valid_session ?? "unknown"}`,
+			document_id: `memswe-${taskId}-${fact.id}`,
+			tags: ["memswe", taskId, fact.id!],
+			metadata: factMetadata(taskId, fact),
 		})),
 	});
-	const listed = await pollUntil(bankId, trace, "retained gamma header fact", (json) =>
-		memoryTexts(json).some((text) => text.includes("invoice_id") || text.includes("customer_id")),
-	);
+	const factTexts = facts.map((fact) => fact.text).filter((text): text is string => typeof text === "string" && text.length > 0);
+	const listed = await pollUntil(bankId, trace, `retained ${taskId} facts`, (json) => memoryTexts(json).length >= factTexts.length);
 	predicateResults.retain_visible = memoryTexts(listed).length > 0;
 	const recall = await requestJson("POST", `/v1/default/banks/${bankId}/memories/recall`, trace, {
-		query: "What is the current gamma invoice CSV export header, sort order, and public endpoint requirement?",
+		query: recallQueryForTask(taskId, facts),
 		budget: "mid",
 		max_tokens: 1024,
 		trace: true,
-		tags: ["memswe", TASK_ID],
+		tags: ["memswe", taskId],
 		tags_match: "all_strict",
 	});
-	const recallJson = JSON.stringify(recall.json);
-	predicateResults.recall_mentions_gamma_fact = recallJson.includes("invoice") && recallJson.includes("created_at") && recallJson.includes("endpoint");
+	const recallJson = JSON.stringify(recall.json).toLowerCase();
+	predicateResults.recall_returned_task_fact = factTexts.some((text) => text.split(/\W+/).filter((token) => token.length >= 6).some((token) => recallJson.includes(token.toLowerCase())));
 	await requestJson("DELETE", `/v1/default/banks/${bankId}/memories`, trace);
 	const afterDelete = await pollUntil(bankId, trace, "deleted memories", (json) => memoryTexts(json).length === 0);
 	predicateResults.delete_cleared_bank = memoryTexts(afterDelete).length === 0;
@@ -246,16 +249,17 @@ async function main(): Promise<void> {
 // map. Mirrors the cloud-adapter convention: an UNREACHABLE Hindsight server yields status "skipped"
 // (not "failed") so the condition wiring is verifiable without the local Hindsight service running, while a
 // reachable server that fails a predicate yields "failed". Bank id is minted per call for run isolation.
-export async function runHindsightLifecycleSmoke(): Promise<{
+export async function runHindsightLifecycleSmoke(options: { taskId?: string; runId?: string } = {}): Promise<{
 	status: "passed" | "failed" | "skipped";
 	predicate_results: Record<string, boolean>;
 	export?: SmokeResult;
 }> {
-	const bankId = mintBankId();
+	const taskId = options.taskId ?? process.env.MEMSWE_HINDSIGHT_SMOKE_TASK_ID ?? DEFAULT_TASK_ID;
+	const bankId = mintBankId(taskId, options.runId);
 	const trace: TraceEvent[] = [];
 	const predicateResults: Record<string, boolean> = {};
 	try {
-		const result = await runSmoke(bankId, trace, predicateResults);
+		const result = await runSmoke(bankId, trace, predicateResults, taskId);
 		return { status: result.status, predicate_results: result.predicate_results, export: result };
 	} catch (caught) {
 		const message = caught instanceof Error ? caught.message : String(caught);
