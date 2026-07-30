@@ -1,7 +1,7 @@
 #!/usr/bin/env -S npx tsx
 
 import { spawn } from "node:child_process";
-import { copyFile, cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -58,7 +58,7 @@ const MEMORY_CONDITION_IDS = ["no_memory", "full_context", "repository_docs", ..
 // carry condition.memory_system = <provider> and baseline_kind = adapter_lifecycle_smoke. Cloud
 // adapters self-report status "skipped" (not "failed") when their API key is unset, so wiring is
 // verifiable without every vendor credential present.
-const PROVIDER_LIFECYCLE_SMOKES: Record<(typeof PROVIDER_CONDITION_IDS)[number], () => Promise<{ status: string; predicate_results?: Record<string, boolean>; export?: unknown }>> = {
+const PROVIDER_LIFECYCLE_SMOKES: Record<(typeof PROVIDER_CONDITION_IDS)[number], (options?: { taskId?: string; runId?: string }) => Promise<{ status: string; predicate_results?: Record<string, boolean>; export?: unknown }>> = {
 	filesystem: runFilesystemLifecycleSmoke,
 	localrag: runLocalRagLifecycleSmoke,
 	zep: runZepLifecycleSmoke,
@@ -641,7 +641,7 @@ async function copyVerifierFiles(taskDir: string, workdir: string, task: TaskYam
 	const assets = inferVerifierAssets(taskDir, workdir, task, includeHidden);
 	for (const asset of assets) {
 		await mkdir(dirname(asset.destination), { recursive: true });
-		await copyFile(asset.source, asset.destination);
+		await cp(asset.source, asset.destination, { recursive: true });
 	}
 }
 async function prepareCondition(conditionId: MemoryConditionId, task: TaskYaml, workdir: string, artifactsDir: string, taskDir: string, runId: string): Promise<ConditionPrepareResult> {
@@ -651,7 +651,7 @@ async function prepareCondition(conditionId: MemoryConditionId, task: TaskYaml, 
 	}
 	const conditionResultPath = join(artifactsDir, "condition-result.json");
 	const artifactPaths: Record<string, string> = { condition_result: conditionResultPath };
-	let memorySystem: string | null = null;
+	let memorySystem: string | null = conditionId === "no_memory" ? "no_memory" : null;
 	let honchoMemory: HonchoGradedMemoryResult | undefined;
 	if (conditionId === "repository_docs") {
 		const docsPath = join(workdir, "docs/agent-project-memory/memswe-facts.md");
@@ -690,7 +690,7 @@ async function prepareCondition(conditionId: MemoryConditionId, task: TaskYaml, 
 		// Run the adapter lifecycle smoke for this provider and record it. A cloud provider with no
 		// API key returns status "skipped" (not "failed"); either way memory_system is the provider id
 		// so the run-record reflects the condition actually exercised.
-		const smoke = await PROVIDER_LIFECYCLE_SMOKES[conditionId as (typeof PROVIDER_CONDITION_IDS)[number]]();
+		const smoke = await PROVIDER_LIFECYCLE_SMOKES[conditionId as (typeof PROVIDER_CONDITION_IDS)[number]]({ taskId: task.harbor?.metadata?.task_id, runId });
 		const smokePath = join(artifactsDir, `provider-smoke-${conditionId}.json`);
 		await writeFile(smokePath, `${JSON.stringify(smoke, null, "	")}\n`);
 		artifactPaths.provider_smoke = smokePath;
@@ -850,6 +850,7 @@ async function runTask(
 			result: null,
 		}));
 	const traceArtifactPath = join(artifactsDir, "memswe-trace.json");
+	const traceExportPath = join(artifactsDir, "memswe-trace-export.json");
 	const record: RunRecord = {
 		run_id: runId,
 		task_id: parsed.harbor?.metadata?.task_id ?? taskId,
@@ -858,11 +859,13 @@ async function runTask(
 			condition_id: conditionResult.condition_id,
 			memory_system: conditionResult.memory_system,
 			baseline_kind:
-				conditionResult.condition_id === "honcho"
-					? "honcho_persistent_graded_memory"
-					: conditionResult.memory_system
-						? "adapter_lifecycle_smoke"
-						: "verifier_only_smoke",
+				conditionResult.condition_id === "no_memory"
+					? "verifier_only_smoke"
+					: conditionResult.condition_id === "honcho"
+						? "honcho_persistent_graded_memory"
+						: conditionResult.memory_system
+							? "adapter_lifecycle_smoke"
+							: "verifier_only_smoke",
 			model_id: agentResult ? `${agentResult.provider_id}/${agentResult.model_id}` : "none/verifier-only",
 			repetition_index: repetitionIndex,
 			k: 1,
@@ -882,6 +885,7 @@ async function runTask(
 					worktree_diff: patchArtifacts.worktreeDiff,
 					changed_files: patchArtifacts.changedFiles,
 					trace_artifact: traceArtifactPath,
+					trace_export: traceExportPath,
 					...conditionResult.artifact_paths,
 					verifier_results: join(artifactsDir, "verifier-results.json"),
 					skipped_hidden_verifiers: join(artifactsDir, "skipped-hidden-verifiers.json"),
@@ -947,6 +951,7 @@ async function runTask(
 		`${JSON.stringify(skippedHiddenCommands, null, "	")}\n`,
 	);
 	await writeFile(traceArtifactPath, `${JSON.stringify(traceArtifact, null, "	")}\n`);
+	await writeFile(traceExportPath, `${JSON.stringify(traceFlush, null, "\t")}\n`);
 	const runRecordPath = join(artifactsDir, "run-record.json");
 	await writeFile(runRecordPath, `${JSON.stringify(record, null, "	")}\n`);
 	if (trace.enabled && !traceFlush.ok) {

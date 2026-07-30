@@ -184,7 +184,22 @@ export class HonchoAdapter implements AmsAdapter {
 		return { output, trace: recorded };
 	}
 
-	async observe(): Promise<NormalizedTrace> {
+	async conclude(scope: AdapterScope, content: string): Promise<NormalizedTrace> {
+		const trace = emptyTrace(scope);
+		await this.ensureWorkspace(trace, scope);
+		await this.captureRequest(trace, {
+			method: "POST",
+			path: `/v3/workspaces/${encodeURIComponent(this.workspaceId(scope))}/conclusions`,
+			operation: "write",
+			scope,
+			body: honchoBody({
+				conclusions: [{ content, observer_id: PEER_ID, observed_id: PEER_ID, session_id: SESSION_ID }],
+			}),
+		});
+		return this.recordTrace(trace);
+	}
+
+	async observe(searchQuery = "all stored facts about the subject"): Promise<NormalizedTrace> {
 		const scope = this.lastScope();
 		const trace = emptyTrace(scope);
 		// The peer representation is the structured store of everything Honcho has derived about the peer.
@@ -193,7 +208,7 @@ export class HonchoAdapter implements AmsAdapter {
 			path: `/v3/workspaces/${encodeURIComponent(this.workspaceId(scope))}/peers/${encodeURIComponent(PEER_ID)}/representation`,
 			operation: "retrieve",
 			scope,
-			body: honchoBody({ session_id: SESSION_ID, search_query: "all stored facts about the subject" }),
+			body: honchoBody({ session_id: SESSION_ID, search_query: searchQuery }),
 		});
 		return this.recordTrace(trace);
 	}
@@ -499,8 +514,8 @@ export async function readbackHonchoWorkspace(opts: {
 			peer_id: PEER_ID,
 		};
 		try {
-			// Do NOT reset — that would wipe the graded memory. Write the conclusion/derived data back.
-			await adapter.seed([{ scope, operation: "write" as const, content: opts.conclusionText, metadata: { conclusion: true } }]);
+			// Do NOT reset — that would wipe the graded memory. Write the post-session outcome as a Honcho v3 conclusion.
+			await adapter.conclude(scope, opts.conclusionText);
 			let recallSample = "";
 			const deadline = Date.now() + Number(process.env.HONCHO_RECALL_TIMEOUT_MS ?? DEFAULT_RECALL_TIMEOUT_MS);
 			do {
@@ -509,9 +524,8 @@ export async function readbackHonchoWorkspace(opts: {
 				if (recallSample.includes(needle)) break;
 				await delay(Number(process.env.HONCHO_RECALL_POLL_MS ?? DEFAULT_RECALL_POLL_MS));
 			} while (Date.now() <= deadline);
-			await adapter.observe(); // exercise the peer representation endpoint
-			const representation = await adapter.run({ scope, prompt: "Describe everything known about this project and the peer's prior facts." });
-			const representationSample = representation.output ?? "";
+			const representationTrace = await adapter.observe(needle);
+			const representationSample = representationTrace.events.at(-1)?.output ?? "";
 			const recall_non_empty = recallSample.trim().length > 0;
 			const representation_non_empty = representationSample.trim().length > 0;
 			const conclusion_present = recallSample.includes(needle) || representationSample.includes(needle);

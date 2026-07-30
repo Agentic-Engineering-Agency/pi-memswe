@@ -104,8 +104,7 @@ Then just talk to pi. By default, pi gives the model four tools: `read`, `write`
 
 This fork is the fixed pi runtime/harness for MemSWE experiments. The benchmark source of truth is the sibling `../memswe` repository: task descriptors, fixtures, session prompts, fact lifecycle, verifier policy, trace predicates, and run-record schema belong there. This package owns execution, condition adapters, trace capture, verifier orchestration, and run artifacts; changes to benchmark identity belong in `memswe`.
 
-The runner defaults to the deterministic faux provider. Real-model execution is available only through an explicit environment gate. A valid comparison must keep the model, prompt template, tools, fixture visibility, verifier rules, repetition policy, and scoring fixed while changing only the memory condition/provider.
-
+The smoke runner defaults to the faux provider with tools disabled, and can run narrow real-model plumbing checks when explicitly requested. It is meant to audit harness plumbing, verifier isolation, artifact emission, and condition setup before scaled real-model pilots. A valid comparison must keep the model, prompt template, tools, fixture visibility, verifier rules, repetition policy, and scoring fixed while changing only the memory condition/provider.
 ### Commands
 
 Run from the `pi-memswe` repo root:
@@ -128,17 +127,23 @@ npm --prefix packages/coding-agent run memswe:hindsight-smoke
 npm --prefix packages/coding-agent run memswe:honcho-smoke
 npm --prefix packages/coding-agent run memswe:zep-smoke
 npm --prefix packages/coding-agent run memswe:supermemory-smoke
+
+# Task-aware Hindsight condition through the MemSWE runner; use --agent-mode=real only with explicit approval.
+npm --prefix packages/coding-agent run memswe:smoke -- --task-id=repo-tau-constraint-recall-001 --condition=hindsight --agent-mode=faux-text
 ```
 
 Supported condition IDs are `no_memory`, `full_context`, `repository_docs`, `filesystem`, `localrag`, `zep`, `supermemory`, `honcho`, `graphiti`, `mem0`, `letta`, and `hindsight`.
 
-- `no_memory` injects no memory context.
+- `no_memory` is the implemented default baseline and injects no memory context.
 - `full_context` assembles declared seeded history and prior non-graded transcripts into a preamble for the graded prompt.
 - `repository_docs` writes valid facts to `docs/agent-project-memory/memswe-facts.md` in the temporary fixture. The agent still needs tools and instructions that can consume that file; materialization alone is not proof of use.
 - `honcho` has a graded path that seeds a run-scoped persistent workspace, injects a recall preamble, writes the graded conclusion back, and requires a positive readback gate.
-- The other provider conditions run their adapter lifecycle probe and record its export before the graded session. In the current runner, that lifecycle result is not generally injected into the graded prompt. Treat these cells as provider/harness integration evidence, not proof that provider recall improved task performance.
+- The other provider conditions (`filesystem`, `localrag`, `zep`, `supermemory`, `graphiti`, `mem0`, `letta`, and `hindsight`) run their adapter lifecycle probe and record its export before the graded session. Missing cloud/local credentials return provider `status: "skipped"` instead of failing condition setup. The lifecycle result is not generally injected into the graded prompt, so treat these cells as provider/harness integration evidence, not proof that provider recall improved task performance.
+- Any other `--condition=...` value is invalid and exits before task execution.
 
-`memswe:smoke` defaults to `--agent-mode=faux-text`. `--agent-mode=real` requires `MEMSWE_ALLOW_REAL_MODEL=1`, an API key (`MEMSWE_LLM_API_KEY` or `OMNIROUTE_API_KEY`), and the configured provider/model/base URL. `--agent-mode=minimax-real` is the older narrow MiniMax path. Real modes disable agent tools in this runner, and `--all-tasks` is intentionally restricted to faux mode to prevent accidental multi-task spend. Provider lifecycle probes can also incur service or model usage; run them only with explicit credential and token scope.
+`memswe:hindsight-smoke` is separate provider-readiness plumbing for the Hindsight API. The MemSWE runner's `--condition=hindsight` path invokes the same lifecycle smoke task-aware: the current task id and run id are passed through so a repo-tau canary seeds/recalls repo-tau facts, not the default gamma fixture. Because retain/recall can use the configured Hindsight LLM provider, treat Hindsight smokes as real local AMS/API calls that may incur model/token usage; do not run them without explicit token scope and approval.
+
+`memswe:smoke` defaults to deterministic `--agent-mode=faux-text`. Real-model plumbing checks are available as `--agent-mode=real` (default provider `omniroute` / model `azure/deepseek-v4-flash`, via `OMNIROUTE_API_KEY` and optional `OMNIROUTE_BASE_URL`; override with `MEMSWE_LLM_PROVIDER`/`MEMSWE_LLM_MODEL`) or the legacy `--agent-mode=minimax-real`, which selects pi provider `minimax` / model `MiniMax-M3`. Real modes require `MEMSWE_ALLOW_REAL_MODEL=1`, disable `--all-tasks`, and should only be used after pilot approval. Note the endpoint distinction: the Hindsight/LiteLLM smoke uses the MiniMax token-plan endpoint `https://api.minimax.io/v1`, while pi's built-in MiniMax-M3 entry uses the provider's Anthropic-compatible endpoint `https://api.minimax.io/anthropic`. Provider lifecycle probes can also incur service or model usage; run them only with explicit credential and token scope.
 
 `memswe:report` aggregates ignored `.memswe-runs/**` artifacts into a static browser report at `.memswe-runs/reports/latest/index.html`, with `run-summary.json` beside it. The report includes run records, verifier counts, suite summaries, Hindsight lifecycle smokes, and optional MiniMax/Hermes diagnostic review JSON files from `.memswe-runs/reviews/`.
 
@@ -174,11 +179,11 @@ Important files:
 - `condition-result.json`: selected memory condition, memory-system label, and condition-specific artifact paths.
 - `full-context-transcript.json`: prior transcript bundle for `full_context`.
 - `repository-docs/memswe-facts.md`: materialized valid facts for `repository_docs`.
-- `provider-smoke-<condition>.json`: lifecycle result for provider conditions other than the Honcho graded path.
+- `provider-smoke-<condition>.json`: lifecycle result for provider conditions other than the Honcho graded path, including task-aware Hindsight evidence.
 - `honcho-graded-memory.json` and `honcho-readback.json`: run-scoped seeded/recall and post-session readback evidence for Honcho.
 - `memswe-trace.json`: local trace artifact used by the `otel_trace_complete` diagnostic predicate.
 
-Standalone provider smokes write provider-specific lifecycle artifacts. They are readiness evidence, not MemSWE task scores.
+Standalone provider smokes write provider-specific lifecycle artifacts. They are readiness evidence, not MemSWE task scores. The Hindsight local smoke writes `.memswe-runs/<timestamp>/hindsight-local-smoke/hindsight-smoke-result.json` when run directly, while `--condition=hindsight` writes a per-task `provider-smoke-hindsight.json` beside the run record. Both include request/response trace events, predicate results, and structured failure guidance.
 
 The report generator writes `.memswe-runs/reports/<timestamp>/index.html` and refreshes `.memswe-runs/reports/latest/index.html`. Generated report artifacts stay ignored; commit the generator, not the reports.
 

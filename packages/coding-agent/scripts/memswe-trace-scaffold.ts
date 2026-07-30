@@ -39,7 +39,7 @@ export type MemSweMemoryLatencySummary = {
 export type MemSweTraceExportResult =
 	| { status: "disabled" }
 	| { status: "skipped"; reason: "endpoint_unset" | "empty_trace" }
-	| { status: "exported"; endpoint: string };
+	| { status: "exported"; endpoint: string; statusCode: number };
 
 type MemSweOtlpExporterConfig = {
 	endpoint: string;
@@ -123,8 +123,8 @@ export function createEnabledMemSweTrace(
 		flush: async () => {
 			if (!exporterConfig) return { status: "skipped", reason: "endpoint_unset" };
 			if (spans.length === 0) return { status: "skipped", reason: "empty_trace" };
-			await exportOtlpTrace(exporterConfig, runId, startedAtMs, copyTraceSpans(spans));
-			return { status: "exported", endpoint: exporterConfig.endpoint };
+			const result = await exportOtlpTrace(exporterConfig, runId, startedAtMs, copyTraceSpans(spans));
+			return { status: "exported", endpoint: exporterConfig.endpoint, statusCode: result.statusCode };
 		},
 	};
 }
@@ -247,7 +247,7 @@ async function exportOtlpTrace(
 	runId: string,
 	startedAtMs: number,
 	spans: MemSweTraceSpan[],
-): Promise<void> {
+): Promise<{ statusCode: number }> {
 	const headers: Record<string, string> = {
 		"content-type": "application/json",
 		"memswe-otlp-endpoint-source": config.endpointSource,
@@ -263,6 +263,7 @@ async function exportOtlpTrace(
 	if (!response.ok) {
 		throw new Error(`MemSWE OTLP export failed with HTTP ${response.status} ${response.statusText}`);
 	}
+	return { statusCode: response.status };
 }
 
 function toOtlpJsonTrace(runId: string, startedAtMs: number, spans: MemSweTraceSpan[]): unknown {
