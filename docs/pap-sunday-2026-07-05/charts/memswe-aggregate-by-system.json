@@ -1,0 +1,95 @@
+{
+  "source_issue": "AGE-232",
+  "verified_by": "AGE-186",
+  "matrix": "10 tasks x 6 conditions x 4 reps = 240 cells",
+  "otel_trace_complete_pass": 240,
+  "generated_at": "2026-07-09T12:56:27.703380Z",
+  "conditions": [
+    "no_memory",
+    "full_context",
+    "hindsight",
+    "honcho",
+    "zep",
+    "supermemory"
+  ],
+  "tasks": [
+    "repo-tau-constraint-recall-001",
+    "repo-zeta-retry-endpoint-forgetting-001",
+    "repo-kappa-api-version-freshness-001",
+    "repo-sigma-migration-order-recall-001",
+    "repo-upsilon-multi-fact-aggregation-001",
+    "repo-lambda-secret-withholding-001",
+    "repo-koppa-quota-abstention-001",
+    "repo-qoppa-abstain-expired-fact-python-001",
+    "repo-vau-session-note-conflict-typescript-001",
+    "repo-pi-checkout-signing-scope-isolation-001"
+  ],
+  "by_system": {
+    "no_memory": {
+      "n": 40,
+      "success_rate": 1.0,
+      "avg_latency_ms": 20430.25,
+      "p50_latency_ms": 6520.5,
+      "avg_cost_usd": 0.000122353,
+      "avg_total_tokens": 598.975,
+      "avg_input_tokens": 324,
+      "avg_output_tokens": 274.975,
+      "avg_injected_mem_share": 0
+    },
+    "full_context": {
+      "n": 40,
+      "success_rate": 1.0,
+      "avg_latency_ms": 3793.35,
+      "p50_latency_ms": 2790.5,
+      "avg_cost_usd": 0.000117509,
+      "avg_total_tokens": 716.275,
+      "avg_input_tokens": 593.2,
+      "avg_output_tokens": 123.075,
+      "avg_injected_mem_share": 0
+    },
+    "hindsight": {
+      "n": 40,
+      "success_rate": 1.0,
+      "avg_latency_ms": 18836.75,
+      "p50_latency_ms": 5923.5,
+      "avg_cost_usd": 0.00011260675000000001,
+      "avg_total_tokens": 567.475,
+      "avg_input_tokens": 323,
+      "avg_output_tokens": 244.475,
+      "avg_injected_mem_share": 0
+    },
+    "honcho": {
+      "n": 40,
+      "success_rate": 1.0,
+      "avg_latency_ms": 14492.65,
+      "p50_latency_ms": 4996.5,
+      "avg_cost_usd": 0.0001094355,
+      "avg_total_tokens": 648.6,
+      "avg_input_tokens": 507.75,
+      "avg_output_tokens": 140.85,
+      "avg_injected_mem_share": 0
+    },
+    "zep": {
+      "n": 40,
+      "success_rate": 1.0,
+      "avg_latency_ms": 22957.875,
+      "p50_latency_ms": 12884.0,
+      "avg_cost_usd": 0.000144732,
+      "avg_total_tokens": 678.4,
+      "avg_input_tokens": 323,
+      "avg_output_tokens": 355.4,
+      "avg_injected_mem_share": 0
+    },
+    "supermemory": {
+      "n": 40,
+      "success_rate": 1.0,
+      "avg_latency_ms": 14978.425,
+      "p50_latency_ms": 11139.5,
+      "avg_cost_usd": 8.6352e-05,
+      "avg_total_tokens": 470.4,
+      "avg_input_tokens": 324,
+      "avg_output_tokens": 146.4,
+      "avg_injected_mem_share": 0
+    }
+  }
+}

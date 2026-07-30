@@ -17,6 +17,7 @@ import type {
 	NormalizedTrace,
 	NormalizedTraceEvent,
 } from "./memswe-adapter-contract.ts";
+import { mintRunScopeId } from "./memswe-adapter-contract.ts";
 
 // Self-hosting recipe (AMB-47) — followable by another coding agent:
 //   1. Clone getzep/graphiti; in deploy/, set NEO4J_PASSWORD and OPENAI_API_KEY (LLM + embedder).
@@ -255,7 +256,8 @@ export class GraphitiAdapter implements AmsAdapter {
 
 export async function runGraphitiLifecycleSmoke(): Promise<GraphitiSmokeResult> {
 	const apiUrl = process.env.GRAPHITI_API_URL;
-	const scope: AdapterScope = { id: `memswe-graphiti-smoke-${Date.now()}` };
+	const timestamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
+	const scope: AdapterScope = { id: mintRunScopeId("graphiti-smoke", timestamp) };
 	if (!apiUrl) return skippedSmoke(scope, "GRAPHITI_API_URL is not set");
 
 	const adapter = new GraphitiAdapter({

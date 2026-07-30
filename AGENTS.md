@@ -1,5 +1,8 @@
 # Development Rules
 
+Workspace standards apply here: [../../docs/standards/README.md](../../docs/standards/README.md).
+This file adds only what is specific to this repo; any conflict is recorded under `## Deviations`.
+
 ## Conversational Style
 
 - Keep answers short and concise
@@ -173,3 +176,7 @@ Attribution:
 ## User Override
 
 If the user's instructions conflict with any rule in this document, ask for explicit confirmation before overriding. Only then execute their instructions.
+
+## Deviations
+
+- None.

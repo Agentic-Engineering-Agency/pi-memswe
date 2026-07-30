@@ -1,7 +1,7 @@
 #!/usr/bin/env -S npx tsx
 
 import { spawn } from "node:child_process";
-import { copyFile, cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -32,16 +32,46 @@ import {
 	validFactsBeforeSession,
 	type VerifierSpec,
 	writePatchArtifacts,
+	collectPriorTranscripts,
+	renderFullContextPreamble,
+	type PriorTranscript,
+	resolveModelPricing,
 } from "./memswe-smoke-runner-lib.ts";
 import { createMemSweTrace, isMemSweOtlpExportConfigured, memoryLatencySummary, traceCompletenessSummary } from "./memswe-trace-scaffold.ts";
+import { runFilesystemLifecycleSmoke } from "./memswe-adapter-filesystem.ts";
+import { runLocalRagLifecycleSmoke } from "./memswe-adapter-localrag.ts";
+import { runZepLifecycleSmoke } from "./memswe-adapter-zep.ts";
+import { runSupermemoryLifecycleSmoke } from "./memswe-adapter-supermemory.ts";
+import { runHonchoLifecycleSmoke, runHonchoGradedMemory, readbackHonchoWorkspace } from "./memswe-adapter-honcho.ts";
+import type { HonchoGradedMemoryResult } from "./memswe-adapter-honcho.ts";
+import { runGraphitiLifecycleSmoke } from "./memswe-adapter-graphiti.ts";
+import { runMem0LifecycleSmoke } from "./memswe-adapter-mem0.ts";
+import { runLettaLifecycleSmoke } from "./memswe-adapter-letta.ts";
+import { runHindsightLifecycleSmoke } from "./memswe-hindsight-smoke.ts";
 
 const DEFAULT_TASK_ID = "repo-gamma-invoice-export-001";
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "../../..");
 const MEMSWE_ROOT = resolve(REPO_ROOT, "../memswe");
 const RUNS_ROOT = join(REPO_ROOT, ".memswe-runs");
-const MEMORY_CONDITION_IDS = ["no_memory", "full_context", "repository_docs", "hindsight"] as const;
-const AGENT_MODE_IDS = ["faux-text", "minimax-real"] as const;
+const PROVIDER_CONDITION_IDS = ["filesystem", "localrag", "zep", "supermemory", "honcho", "graphiti", "mem0", "letta", "hindsight"] as const;
+const MEMORY_CONDITION_IDS = ["no_memory", "full_context", "repository_docs", ...PROVIDER_CONDITION_IDS] as const;
+// AGE-184: each provider condition runs the corresponding AMS adapter lifecycle smoke so run-records
+// carry condition.memory_system = <provider> and baseline_kind = adapter_lifecycle_smoke. Cloud
+// adapters self-report status "skipped" (not "failed") when their API key is unset, so wiring is
+// verifiable without every vendor credential present.
+const PROVIDER_LIFECYCLE_SMOKES: Record<(typeof PROVIDER_CONDITION_IDS)[number], (options?: { taskId?: string; runId?: string }) => Promise<{ status: string; predicate_results?: Record<string, boolean>; export?: unknown }>> = {
+	filesystem: runFilesystemLifecycleSmoke,
+	localrag: runLocalRagLifecycleSmoke,
+	zep: runZepLifecycleSmoke,
+	supermemory: runSupermemoryLifecycleSmoke,
+	honcho: runHonchoLifecycleSmoke,
+	graphiti: runGraphitiLifecycleSmoke,
+	mem0: runMem0LifecycleSmoke,
+	letta: runLettaLifecycleSmoke,
+	hindsight: runHindsightLifecycleSmoke,
+};
+const AGENT_MODE_IDS = ["faux-text", "real", "minimax-real"] as const;
 
 type VerifierKind = "visible" | "hidden" | "protected";
 type MemoryConditionId = (typeof MEMORY_CONDITION_IDS)[number];
@@ -89,6 +119,10 @@ type AgentRunResult = {
 	provider_id: string;
 	base_url: string;
 	langfuse_tracing: boolean;
+	total_tokens?: number;
+	input_tokens?: number;
+	output_tokens?: number;
+	cost_usd?: number;
 };
 
 type RunRecord = {
@@ -143,6 +177,7 @@ type ConditionPrepareResult = {
 	condition_id: MemoryConditionId;
 	memory_system: string | null;
 	artifact_paths: Record<string, string>;
+	honcho_memory?: HonchoGradedMemoryResult;
 };
 
 function getArgumentValue(name: string): string | undefined {
@@ -165,9 +200,19 @@ function parseConditionId(value: string | undefined): MemoryConditionId {
 }
 
 function parseAgentMode(value: string | undefined): AgentMode {
-	const agentMode = value ?? "faux-text";
+	const val = value === "faux" ? "faux-text" : value;
+	const agentMode = val ?? "faux-text";
 	if (AGENT_MODE_IDS.includes(agentMode as AgentMode)) return agentMode as AgentMode;
 	throw new Error(`Invalid --agent-mode=${agentMode}; expected one of ${AGENT_MODE_IDS.join(", ")}`);
+}
+
+function parseRepetitionIndex(value: string | undefined): number {
+	if (value === undefined) return 1;
+	const n = Number.parseInt(value, 10);
+	if (!Number.isInteger(n) || n < 1) {
+		throw new Error(`Invalid --repetition-index=${value}; expected a positive integer (1-based)`);
+	}
+	return n;
 }
 
 function isTaskYaml(value: unknown): value is TaskYaml {
@@ -289,9 +334,13 @@ async function runFauxAgentSession(
 	workdir: string,
 	artifactsDir: string,
 	observabilityEnabled: boolean,
+	priorTranscripts?: PriorTranscript[],
+	memoryPreamble?: string,
 ): Promise<AgentRunResult> {
 	const gradedSession = resolveGradedSession(task);
-	const prompt = await readFile(join(taskDir, gradedSession.prompt_ref!), "utf8");
+	const gradedPrompt = await readFile(join(taskDir, gradedSession.prompt_ref!), "utf8");
+	const fullContextPreamble = priorTranscripts ? renderFullContextPreamble(priorTranscripts) : "";
+	const prompt = [memoryPreamble, fullContextPreamble, gradedPrompt].filter((part) => part && part.length > 0).join("\n");
 	const extensions = observabilityEnabled
 		? await loadLangfuseExtensions(workdir)
 		: { extensions: [], errors: [], runtime: createExtensionRuntime() };
@@ -374,28 +423,69 @@ async function runFauxAgentSession(
 	};
 }
 
-async function runMinimaxAgentSession(
+async function runRealAgentSession(
 	task: TaskYaml,
 	taskDir: string,
 	workdir: string,
 	artifactsDir: string,
 	observabilityEnabled: boolean,
+	priorTranscripts?: PriorTranscript[],
+	memoryPreamble?: string,
 ): Promise<AgentRunResult> {
 	const gradedSession = resolveGradedSession(task);
-	const prompt = await readFile(join(taskDir, gradedSession.prompt_ref!), "utf8");
+	const gradedPrompt = await readFile(join(taskDir, gradedSession.prompt_ref!), "utf8");
+	const fullContextPreamble = priorTranscripts ? renderFullContextPreamble(priorTranscripts) : "";
+	const prompt = [memoryPreamble, fullContextPreamble, gradedPrompt].filter((part) => part && part.length > 0).join("\n");
 	if (process.env.MEMSWE_ALLOW_REAL_MODEL !== "1") {
-		throw new Error("--agent-mode=minimax-real requires MEMSWE_ALLOW_REAL_MODEL=1 to confirm intentional real-model spend.");
+		throw new Error("--agent-mode=real requires MEMSWE_ALLOW_REAL_MODEL=1 to confirm intentional real-model spend.");
 	}
-	const apiKey = process.env.MINIMAX_API_KEY ?? process.env.HINDSIGHT_API_LLM_API_KEY;
+
+	const providerId = process.env.MEMSWE_LLM_PROVIDER ?? "omniroute";
+	const modelId = process.env.MEMSWE_LLM_MODEL ?? "azure/deepseek-v4-flash";
+	const apiKey = process.env.MEMSWE_LLM_API_KEY ?? process.env.OMNIROUTE_API_KEY;
+	const baseUrl = process.env.MEMSWE_LLM_BASE_URL ?? process.env.OMNIROUTE_BASE_URL;
+
 	if (!apiKey) {
-		throw new Error("--agent-mode=minimax-real requires MINIMAX_API_KEY in the environment; HINDSIGHT_API_LLM_API_KEY is accepted for local smoke reuse.");
+		throw new Error("--agent-mode=real requires MEMSWE_LLM_API_KEY or OMNIROUTE_API_KEY in the environment.");
 	}
 
 	const authStorage = AuthStorage.inMemory();
-	authStorage.setRuntimeApiKey("minimax", apiKey);
+	authStorage.setRuntimeApiKey(providerId, apiKey);
 	const modelRegistry = ModelRegistry.inMemory(authStorage);
-	const model = modelRegistry.find("minimax", "MiniMax-M3");
-	if (!model) throw new Error("MiniMax-M3 model is not registered for provider minimax");
+
+	let model = modelRegistry.find(providerId, modelId);
+	if (!model && baseUrl) {
+		const pricing = resolveModelPricing(modelId, process.env);
+		if (pricing.source === "none") {
+			console.warn(`[Cost Registry] WARNING: No pricing config for ${modelId}. Set MEMSWE_LLM_INPUT_COST_PER_M and MEMSWE_LLM_OUTPUT_COST_PER_M to enable non-zero cost tracking. Defaulting to 0.`);
+		} else {
+			console.log(`[Cost Registry] Registering model ${modelId} with pricing: ${pricing.input} input, ${pricing.output} output per 1M tokens (source: ${pricing.source}).`);
+		}
+
+		modelRegistry.registerProvider(providerId, {
+			baseUrl,
+			apiKey,
+			api: "openai-completions" as unknown as import("@earendil-works/pi-ai").Api,
+			models: [{
+				id: modelId,
+				name: modelId,
+				api: "openai-completions" as unknown as import("@earendil-works/pi-ai").Api,
+				reasoning: false,
+				input: ["text"],
+				cost: {
+					input: pricing.input,
+					output: pricing.output,
+					cacheRead: pricing.cacheRead,
+					cacheWrite: pricing.cacheWrite,
+				},
+				contextWindow: 128000,
+				maxTokens: 8192,
+			}],
+		});
+		model = modelRegistry.find(providerId, modelId);
+	}
+
+	if (!model) throw new Error(`Model ${modelId} is not registered for provider ${providerId}`);
 
 	const extensions = observabilityEnabled
 		? await loadLangfuseExtensions(workdir)
@@ -431,9 +521,38 @@ async function runMinimaxAgentSession(
 		session.dispose();
 	}
 
-	const assistantMessages = session.messages.filter((message) => message.role === "assistant");
+	const assistantMessages = session.messages.filter(
+		(message): message is Extract<typeof message, { role: "assistant" }> => message.role === "assistant",
+	);
 	const finalResponse = messageText(assistantMessages.at(-1));
 	await writeFile(join(artifactsDir, "agent-final-response.txt"), `${finalResponse}\n`);
+
+	// Surface model-side failures (e.g. 404 "No active credentials") as run errors.
+	// session.prompt() does not throw on these; the failure lands on the assistant
+	// message's stopReason/errorMessage. Without this, zero-inference failures look green.
+	if (status !== "errored") {
+		const failed = assistantMessages.find(
+			(message) => message.stopReason === "error" || message.stopReason === "aborted",
+		);
+		if (failed) {
+			status = "errored";
+			error = failed.errorMessage ?? `Model stopped with reason "${failed.stopReason}"`;
+		}
+	}
+
+	// Propagate real token usage into the result so metric_vector is not stuck at 0.
+	// input_tokens follows the established convention (usage.input + usage.cacheRead).
+	let input_tokens = 0;
+	let output_tokens = 0;
+	let cost_usd = 0;
+	for (const message of assistantMessages) {
+		if (message.stopReason === "error" || message.stopReason === "aborted") continue;
+		input_tokens += message.usage.input + message.usage.cacheRead;
+		output_tokens += message.usage.output;
+		cost_usd += message.usage.cost?.total ?? 0;
+	}
+	const total_tokens = input_tokens + output_tokens;
+
 	return {
 		session_id: gradedSession.session_id!,
 		prompt_ref: gradedSession.prompt_ref!,
@@ -442,11 +561,15 @@ async function runMinimaxAgentSession(
 		message_count: session.messages.length,
 		status,
 		error,
-		agent_mode: "minimax-real",
+		agent_mode: "real",
 		model_id: model.id,
 		provider_id: model.provider,
 		base_url: model.baseUrl,
 		langfuse_tracing: extensions.extensions.length > 0,
+		total_tokens,
+		input_tokens,
+		output_tokens,
+		cost_usd,
 	};
 }
 
@@ -457,11 +580,13 @@ async function runAgentSession(
 	workdir: string,
 	artifactsDir: string,
 	observabilityEnabled: boolean,
+	priorTranscripts?: PriorTranscript[],
+	memoryPreamble?: string,
 ): Promise<AgentRunResult> {
-	if (agentMode === "minimax-real") {
-		return runMinimaxAgentSession(task, taskDir, workdir, artifactsDir, observabilityEnabled);
+	if (agentMode === "real" || agentMode === "minimax-real") {
+		return runRealAgentSession(task, taskDir, workdir, artifactsDir, observabilityEnabled, priorTranscripts, memoryPreamble);
 	}
-	return runFauxAgentSession(task, taskDir, workdir, artifactsDir, observabilityEnabled);
+	return runFauxAgentSession(task, taskDir, workdir, artifactsDir, observabilityEnabled, priorTranscripts, memoryPreamble);
 }
 
 function verifierCommands(task: TaskYaml, includeHidden: boolean): VerifierCommand[] {
@@ -532,16 +657,18 @@ async function copyVerifierFiles(taskDir: string, workdir: string, task: TaskYam
 	const assets = inferVerifierAssets(taskDir, workdir, task, includeHidden);
 	for (const asset of assets) {
 		await mkdir(dirname(asset.destination), { recursive: true });
-		await copyFile(asset.source, asset.destination);
+		await cp(asset.source, asset.destination, { recursive: true });
 	}
 }
-
-async function prepareCondition(conditionId: MemoryConditionId, task: TaskYaml, workdir: string, artifactsDir: string): Promise<ConditionPrepareResult> {
-	if (conditionId !== "no_memory" && conditionId !== "repository_docs") {
+async function prepareCondition(conditionId: MemoryConditionId, task: TaskYaml, workdir: string, artifactsDir: string, taskDir: string, runId: string): Promise<ConditionPrepareResult> {
+	const isProvider = (PROVIDER_CONDITION_IDS as readonly string[]).includes(conditionId);
+	if (conditionId !== "no_memory" && conditionId !== "repository_docs" && conditionId !== "full_context" && !isProvider) {
 		throw new Error(`Memory condition ${conditionId} is not implemented`);
 	}
 	const conditionResultPath = join(artifactsDir, "condition-result.json");
 	const artifactPaths: Record<string, string> = { condition_result: conditionResultPath };
+	let memorySystem: string | null = conditionId === "no_memory" ? "no_memory" : null;
+	let honchoMemory: HonchoGradedMemoryResult | undefined;
 	if (conditionId === "repository_docs") {
 		const docsPath = join(workdir, "docs/agent-project-memory/memswe-facts.md");
 		const docsArtifactPath = join(artifactsDir, "repository-docs/memswe-facts.md");
@@ -551,11 +678,45 @@ async function prepareCondition(conditionId: MemoryConditionId, task: TaskYaml, 
 		await writeFile(docsPath, docs);
 		await writeFile(docsArtifactPath, docs);
 		artifactPaths.repository_docs = docsArtifactPath;
+	} else if (conditionId === "full_context") {
+		// full_context: replay prior non-graded session transcripts before graded prompt.
+		// memory_system = full_context so run-record validates.
+		memorySystem = "full_context";
+		const transcriptPath = join(artifactsDir, "full-context-transcript.json");
+		const prior = collectPriorTranscripts(task, taskDir);
+		await writeFile(transcriptPath, `${JSON.stringify(prior, null, "	")}\n`);
+		artifactPaths.full_context_transcript = transcriptPath;
+	} else if (conditionId === "honcho") {
+		// AGE-206: honcho graded runs use a PERSISTENT, per-run-isolated Honcho workspace instead of the
+		// self-deleting lifecycle smoke. Seed the valid remembered facts into the run-scoped workspace, then
+		// recall a memory preamble that is injected into the graded prompt. The workspace is NOT deleted so
+		// that a post-session readback (see runTask) can prove peer + conclusion/derived data landed.
+		const gradedSession = resolveGradedSession(task);
+		const facts = validFactsBeforeSession(task, gradedSession.session_id!)
+			.map((fact) => fact.text)
+			.filter((text): text is string => typeof text === "string" && text.length > 0);
+		const recallQuery = "Summarize everything you remember about this project from prior sessions.";
+		const mem = await runHonchoGradedMemory({ scopeId: runId, facts, recallQuery });
+		const memPath = join(artifactsDir, "honcho-graded-memory.json");
+		await writeFile(memPath, `${JSON.stringify(mem, null, "	")}\n`);
+		artifactPaths.honcho_graded_memory = memPath;
+		memorySystem = "honcho";
+		honchoMemory = mem;
+	} else if (isProvider) {
+		// Run the adapter lifecycle smoke for this provider and record it. A cloud provider with no
+		// API key returns status "skipped" (not "failed"); either way memory_system is the provider id
+		// so the run-record reflects the condition actually exercised.
+		const smoke = await PROVIDER_LIFECYCLE_SMOKES[conditionId as (typeof PROVIDER_CONDITION_IDS)[number]]({ taskId: task.harbor?.metadata?.task_id, runId });
+		const smokePath = join(artifactsDir, `provider-smoke-${conditionId}.json`);
+		await writeFile(smokePath, `${JSON.stringify(smoke, null, "	")}\n`);
+		artifactPaths.provider_smoke = smokePath;
+		memorySystem = conditionId;
 	}
 	const result: ConditionPrepareResult = {
 		condition_id: conditionId,
-		memory_system: null,
+		memory_system: memorySystem,
 		artifact_paths: artifactPaths,
+		honcho_memory: honchoMemory,
 	};
 	await writeFile(conditionResultPath, `${JSON.stringify(result, null, "	")}\n`);
 	return result;
@@ -586,6 +747,7 @@ async function runTask(
 	conditionId: MemoryConditionId,
 	agentMode: AgentMode,
 	traceEnabled: boolean,
+	repetitionIndex: number,
 	agentTracingEnabled: boolean,
 ): Promise<TaskRunResult> {
 	const taskDir = join(MEMSWE_ROOT, "tasks", taskId);
@@ -593,10 +755,14 @@ async function runTask(
 	const parsed = parse(await readFile(taskYamlPath, "utf8"));
 	if (!isTaskYaml(parsed)) throw new Error(`Expected object task YAML at ${taskYamlPath}`);
 
-	const runId = `memswe-smoke-${taskId}-${timestamp}`;
+	// AGE-206: carry condition + repetition into the run id so runs are namespace-isolated and auditable.
+	// The honcho condition derives its per-run Honcho workspace id from this scope, so it must be unique
+	// per (task, condition, repetition, timestamp) or repetitions would share a workspace.
+	const runSlug = `${taskId}-${conditionId}-r${repetitionIndex}`;
+	const runId = `memswe-smoke-${runSlug}-${timestamp}`;
 	const trace = createMemSweTrace(runId, traceEnabled);
 	const benchmarkSpan = trace.startSpan("benchmark", "benchmark.run", { task_id: taskId, condition_id: conditionId, agent_mode: agentMode });
-	const artifactsDir = join(RUNS_ROOT, timestamp, taskId);
+	const artifactsDir = join(RUNS_ROOT, timestamp, `${taskId}-${conditionId}-r${repetitionIndex}`);
 	const workdir = join(tmpdir(), runId, "worktree");
 	const repoDir = join(workdir, "fixture");
 	await rm(dirname(workdir), { recursive: true, force: true });
@@ -605,13 +771,20 @@ async function runTask(
 	await copyVerifierFiles(taskDir, workdir, parsed, includeHidden);
 	await mkdir(artifactsDir, { recursive: true });
 	const memorySpan = trace.startSpan("memory", "memory.prepare", { condition_id: conditionId });
-	const conditionResult = await prepareCondition(conditionId, parsed, repoDir, artifactsDir);
+	const conditionResult = await prepareCondition(conditionId, parsed, repoDir, artifactsDir, taskDir, runId);
 	memorySpan.end();
 	await initializeWorktreeBaseline(repoDir);
 
+	const agentSessionStart = performance.now();
+	const priorTranscripts = conditionId === "full_context" ? collectPriorTranscripts(parsed, taskDir) : undefined;
+	// AGE-206: honcho graded runs read their seeded per-run Honcho workspace via a recall preamble, then
+	// write the graded outcome back and assert readback (peer + conclusion/derived data) AFTER the session.
+	const honchoMemory = conditionResult.honcho_memory;
+	const memoryPreamble = honchoMemory?.preamble;
 	const agentResult = skipFauxAgent
 		? undefined
-		: await runAgentSession(agentMode, parsed, taskDir, repoDir, artifactsDir, agentTracingEnabled);
+		: await runAgentSession(agentMode, parsed, taskDir, repoDir, artifactsDir, agentTracingEnabled, priorTranscripts, memoryPreamble);
+	const agentSessionLatencyMs = skipFauxAgent ? 0 : Math.round(performance.now() - agentSessionStart);
 	if (agentResult) {
 		console.log(
 			`${agentResult.agent_mode} agent session ${agentResult.session_id} finished with ${agentResult.status}; captured ${agentResult.event_count} event(s).`,
@@ -619,6 +792,31 @@ async function runTask(
 		if (agentResult.langfuse_tracing) {
 			console.log(`Langfuse agent tracing active for session ${agentResult.session_id}.`);
 		}
+	}
+	// AGE-206: after the graded honcho session, write the agent's conclusion back into the SAME per-run
+	// Honcho workspace and assert readback (peer representation + conclusion/derived data). The workspace is
+	// never deleted, so this proves persisted graded memory rather than a throwaway lifecycle smoke.
+	let honchoReadbackPassed = true;
+	if (conditionId === "honcho" && honchoMemory) {
+		const agentConclusion = agentResult?.final_response?.trim() || "(no agent output captured for this run)";
+		const conclusionText = `[graded-conclusion ${runId}] ${agentConclusion}`.slice(0, 4000);
+		const readback: Record<string, unknown> =
+			honchoMemory.status === "ready"
+				? await readbackHonchoWorkspace({ scopeId: runId, conclusionText })
+				: {
+						schema_version: "memswe-honcho-readback.v0.1",
+						created_at: new Date().toISOString(),
+						scope_id: runId,
+						status: "skipped",
+						reason: `graded honcho memory was ${honchoMemory.status}; no persistent workspace to read back`,
+					};
+		const readbackPath = join(artifactsDir, "honcho-readback.json");
+		await writeFile(readbackPath, `${JSON.stringify(readback, null, "	")}\n`);
+		conditionResult.artifact_paths.honcho_readback = readbackPath;
+		// AGE-206 acceptance requires a POSITIVE readback (peer + conclusion data). A skipped/failed readback
+		// means the graded honcho memory was never proven, so the run must not be reported as passing.
+		honchoReadbackPassed = readback.status === "passed";
+		console.log(`honcho readback for ${runId}: ${String(readback.status)} (run_gate=${honchoReadbackPassed})`);
 	}
 	const patchArtifacts = await writePatchArtifacts(repoDir, artifactsDir);
 	const pythonEnvironment = await preparePythonEnvironment(repoDir, parsed);
@@ -657,14 +855,22 @@ async function runTask(
 	const reward = scoreReward(results);
 	const verifiersPassed = results.length > 0 && passed(results) === results.length;
 	const agentPassed = agentResult?.status !== "errored";
-	const allPassed = verifiersPassed && agentPassed;
+	const allPassed = verifiersPassed && agentPassed && honchoReadbackPassed;
 	scoringSpan.end();
 	benchmarkSpan.end();
 	const traceArtifact = trace.toArtifact();
-	await trace.flush();
 	const traceCompleteness = traceCompletenessSummary(traceArtifact);
 	const memoryLatency = memoryLatencySummary(traceArtifact);
+	const traceFlush = await trace
+		.flush()
+		.then((result) => ({ ok: true, error: null as string | null, result }))
+		.catch((error: unknown) => ({
+			ok: false,
+			error: error instanceof Error ? error.message : String(error),
+			result: null,
+		}));
 	const traceArtifactPath = join(artifactsDir, "memswe-trace.json");
+	const traceExportPath = join(artifactsDir, "memswe-trace-export.json");
 	const record: RunRecord = {
 		run_id: runId,
 		task_id: parsed.harbor?.metadata?.task_id ?? taskId,
@@ -672,9 +878,16 @@ async function runTask(
 		condition: {
 			condition_id: conditionResult.condition_id,
 			memory_system: conditionResult.memory_system,
-			baseline_kind: "verifier_only_smoke",
+			baseline_kind:
+				conditionResult.condition_id === "no_memory"
+					? "verifier_only_smoke"
+					: conditionResult.condition_id === "honcho"
+						? "honcho_persistent_graded_memory"
+						: conditionResult.memory_system
+							? "adapter_lifecycle_smoke"
+							: "verifier_only_smoke",
 			model_id: agentResult ? `${agentResult.provider_id}/${agentResult.model_id}` : "none/verifier-only",
-			repetition_index: 1,
+			repetition_index: repetitionIndex,
 			k: 1,
 		},
 		session_results: [
@@ -692,6 +905,7 @@ async function runTask(
 					worktree_diff: patchArtifacts.worktreeDiff,
 					changed_files: patchArtifacts.changedFiles,
 					trace_artifact: traceArtifactPath,
+					trace_export: traceExportPath,
 					...conditionResult.artifact_paths,
 					verifier_results: join(artifactsDir, "verifier-results.json"),
 					skipped_hidden_verifiers: join(artifactsDir, "skipped-hidden-verifiers.json"),
@@ -700,15 +914,15 @@ async function runTask(
 		],
 		...(reward ? { reward } : {}),
 		metric_vector: {
-			task_success_visible: visible.length === 0 ? null : passed(visible) / visible.length,
-			task_success_hidden: hidden.length === 0 ? null : passed(hidden) / hidden.length,
-			per_task_cost_usd: 0,
-			end_to_end_task_latency_ms: results.reduce((sum, result) => sum + result.duration_ms, 0),
+			task_success_visible: !agentPassed ? null : visible.length === 0 ? null : passed(visible) / visible.length,
+			task_success_hidden: !agentPassed ? null : hidden.length === 0 ? null : passed(hidden) / hidden.length,
+			per_task_cost_usd: agentResult?.cost_usd ?? 0,
+			end_to_end_task_latency_ms: agentSessionLatencyMs + results.reduce((sum, result) => sum + result.duration_ms, 0),
 			memory_retrieval_latency_p50_ms: memoryLatency.p50_ms,
 			memory_retrieval_latency_p95_ms: memoryLatency.p95_ms,
-			total_tokens: 0,
-			input_tokens: 0,
-			output_tokens: 0,
+			total_tokens: agentResult?.total_tokens ?? 0,
+			input_tokens: agentResult?.input_tokens ?? 0,
+			output_tokens: agentResult?.output_tokens ?? 0,
 			thinking_tokens: null,
 			context_tokens_required: null,
 			session_bootstrap_information: null,
@@ -735,7 +949,7 @@ async function runTask(
 			})),
 			{
 				id: "otel_trace_complete",
-				outcome: trace.enabled ? (traceCompleteness.complete ? "pass" : "fail") : "not_evaluable",
+				outcome: trace.enabled ? (traceCompleteness.complete && traceFlush.ok ? "pass" : "fail") : "not_evaluable",
 				severity: "diagnostic",
 				evidence_ref: trace.enabled ? traceArtifactPath : null,
 			},
@@ -757,8 +971,15 @@ async function runTask(
 		`${JSON.stringify(skippedHiddenCommands, null, "	")}\n`,
 	);
 	await writeFile(traceArtifactPath, `${JSON.stringify(traceArtifact, null, "	")}\n`);
+	await writeFile(traceExportPath, `${JSON.stringify(traceFlush, null, "\t")}\n`);
 	const runRecordPath = join(artifactsDir, "run-record.json");
 	await writeFile(runRecordPath, `${JSON.stringify(record, null, "	")}\n`);
+	if (trace.enabled && !traceFlush.ok) {
+		console.warn(
+			`MemSWE OTLP flush failed (run-record written, marking run non-green): ${traceFlush.error}`,
+		);
+		process.exitCode = 1;
+	}
 	console.log(`Wrote ${relative(REPO_ROOT, runRecordPath)}`);
 	return { taskId, allPassed, runRecordPath };
 }
@@ -768,11 +989,12 @@ async function main(): Promise<void> {
 	const skipFauxAgent = hasFlag("--skip-faux-agent");
 	const conditionId = parseConditionId(getArgumentValue("--condition"));
 	const agentMode = parseAgentMode(getArgumentValue("--agent-mode"));
+	const repetitionIndex = parseRepetitionIndex(getArgumentValue("--repetition-index"));
 	const traceEnabled = !hasFlag("--no-otel-trace") && (hasFlag("--otel-trace") || isMemSweOtlpExportConfigured());
 	const agentTracingEnabled = !hasFlag("--no-otel-trace") && isLangfuseAgentTracingConfigured();
 	const timestamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
 	if (!hasFlag("--all-tasks")) {
-		const result = await runTask(getArgumentValue("--task-id") ?? DEFAULT_TASK_ID, timestamp, includeHidden, skipFauxAgent, conditionId, agentMode, traceEnabled, agentTracingEnabled);
+		const result = await runTask(getArgumentValue("--task-id") ?? DEFAULT_TASK_ID, timestamp, includeHidden, skipFauxAgent, conditionId, agentMode, traceEnabled, repetitionIndex, agentTracingEnabled);
 		if (!result.allPassed) process.exitCode = 1;
 		return;
 	}
@@ -787,7 +1009,7 @@ async function main(): Promise<void> {
 	let hasFailure = false;
 	for (const taskId of await discoverTaskIds(MEMSWE_ROOT)) {
 		try {
-			const result = await runTask(taskId, timestamp, includeHidden, skipFauxAgent, conditionId, agentMode, traceEnabled, agentTracingEnabled);
+			const result = await runTask(taskId, timestamp, includeHidden, skipFauxAgent, conditionId, agentMode, traceEnabled, repetitionIndex, agentTracingEnabled);
 			const status = result.allPassed ? "passed" : "failed";
 			hasFailure = hasFailure || !result.allPassed;
 			taskResults.push({
