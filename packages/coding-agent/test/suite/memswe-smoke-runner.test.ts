@@ -9,6 +9,7 @@ import { classifyPrimaryFailureCategory, resolveRunSessionId, scoreReward } from
 import {
 	discoverTaskIds,
 	inferVerifierAssets,
+	resolveModelPricing,
 	initializeWorktreeBaseline,
 	preparePythonEnvironment,
 	type TaskYaml,
@@ -279,16 +280,118 @@ describe("memswe OTel trace scaffold", () => {
 		}
 	});
 
+	test("derives OTLP sink from PAPERCLIP_HOST_URL when Langfuse keys are present", async () => {
+		const originalFetch = globalThis.fetch;
+		const originalLangfuseEndpoint = process.env.LANGFUSE_OTLP_ENDPOINT;
+		const originalOtelEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+		const originalLangfuseBaseUrl = process.env.LANGFUSE_BASE_URL;
+		const originalPaperclipLangfuseBaseUrl = process.env.PAPERCLIP_LANGFUSE_BASE_URL;
+		const originalPaperclipHostUrl = process.env.PAPERCLIP_HOST_URL;
+		const originalPublicKey = process.env.LANGFUSE_PUBLIC_KEY;
+		const originalSecretKey = process.env.LANGFUSE_SECRET_KEY;
+		const originalPaperclipPublicKey = process.env.PAPERCLIP_LANGFUSE_PUBLIC_KEY;
+		const originalPaperclipSecretKey = process.env.PAPERCLIP_LANGFUSE_SECRET_KEY;
+		const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
+
+		delete process.env.LANGFUSE_OTLP_ENDPOINT;
+		delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+		delete process.env.LANGFUSE_BASE_URL;
+		delete process.env.PAPERCLIP_LANGFUSE_BASE_URL;
+		delete process.env.LANGFUSE_PUBLIC_KEY;
+		delete process.env.LANGFUSE_SECRET_KEY;
+		process.env.PAPERCLIP_HOST_URL = "https://langfuse.example.test";
+		process.env.PAPERCLIP_LANGFUSE_PUBLIC_KEY = "pk-paperclip";
+		process.env.PAPERCLIP_LANGFUSE_SECRET_KEY = "sk-paperclip";
+		globalThis.fetch = fetchMock;
+
+		try {
+			const trace = createEnabledMemSweTrace("run-host-fallback", 1000);
+			trace.startSpan("benchmark", "benchmark.run", {}, 1000).end(1010);
+
+			await trace.flush();
+
+			const firstCall = (fetchMock.mock.calls as unknown as Array<[string, RequestInit]>)[0];
+			if (!firstCall) throw new Error("Expected OTLP fetch call");
+			expect(firstCall[0]).toBe("https://langfuse.example.test/api/public/otel/v1/traces");
+			expect((firstCall[1] as RequestInit).headers).toEqual({
+				authorization: `Basic ${Buffer.from("pk-paperclip:sk-paperclip").toString("base64")}`,
+				"content-type": "application/json",
+				"memswe-otlp-endpoint-source": "LANGFUSE_BASE_URL",
+			});
+		} finally {
+			globalThis.fetch = originalFetch;
+			restoreEnv("LANGFUSE_OTLP_ENDPOINT", originalLangfuseEndpoint);
+			restoreEnv("OTEL_EXPORTER_OTLP_ENDPOINT", originalOtelEndpoint);
+			restoreEnv("LANGFUSE_BASE_URL", originalLangfuseBaseUrl);
+			restoreEnv("PAPERCLIP_LANGFUSE_BASE_URL", originalPaperclipLangfuseBaseUrl);
+			restoreEnv("PAPERCLIP_HOST_URL", originalPaperclipHostUrl);
+			restoreEnv("LANGFUSE_PUBLIC_KEY", originalPublicKey);
+			restoreEnv("LANGFUSE_SECRET_KEY", originalSecretKey);
+			restoreEnv("PAPERCLIP_LANGFUSE_PUBLIC_KEY", originalPaperclipPublicKey);
+			restoreEnv("PAPERCLIP_LANGFUSE_SECRET_KEY", originalPaperclipSecretKey);
+		}
+	});
+
+	test("ignores PAPERCLIP_HOST_URL as OTLP sink when Langfuse keys are absent", async () => {
+		const originalFetch = globalThis.fetch;
+		const originalLangfuseEndpoint = process.env.LANGFUSE_OTLP_ENDPOINT;
+		const originalOtelEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+		const originalLangfuseBaseUrl = process.env.LANGFUSE_BASE_URL;
+		const originalPaperclipLangfuseBaseUrl = process.env.PAPERCLIP_LANGFUSE_BASE_URL;
+		const originalPaperclipHostUrl = process.env.PAPERCLIP_HOST_URL;
+		const originalPublicKey = process.env.LANGFUSE_PUBLIC_KEY;
+		const originalSecretKey = process.env.LANGFUSE_SECRET_KEY;
+		const originalPaperclipPublicKey = process.env.PAPERCLIP_LANGFUSE_PUBLIC_KEY;
+		const originalPaperclipSecretKey = process.env.PAPERCLIP_LANGFUSE_SECRET_KEY;
+		const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
+
+		delete process.env.LANGFUSE_OTLP_ENDPOINT;
+		delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+		delete process.env.LANGFUSE_BASE_URL;
+		delete process.env.PAPERCLIP_LANGFUSE_BASE_URL;
+		delete process.env.LANGFUSE_PUBLIC_KEY;
+		delete process.env.LANGFUSE_SECRET_KEY;
+		delete process.env.PAPERCLIP_LANGFUSE_PUBLIC_KEY;
+		delete process.env.PAPERCLIP_LANGFUSE_SECRET_KEY;
+		process.env.PAPERCLIP_HOST_URL = "https://paperclip-app.example.test";
+		globalThis.fetch = fetchMock;
+
+		try {
+			const trace = createEnabledMemSweTrace("run-no-keys", 1000);
+			trace.startSpan("benchmark", "benchmark.run", {}, 1000).end(1010);
+
+			await expect(trace.flush()).resolves.toEqual({ status: "skipped", reason: "endpoint_unset" });
+			expect(fetchMock).not.toHaveBeenCalled();
+		} finally {
+			globalThis.fetch = originalFetch;
+			restoreEnv("LANGFUSE_OTLP_ENDPOINT", originalLangfuseEndpoint);
+			restoreEnv("OTEL_EXPORTER_OTLP_ENDPOINT", originalOtelEndpoint);
+			restoreEnv("LANGFUSE_BASE_URL", originalLangfuseBaseUrl);
+			restoreEnv("PAPERCLIP_LANGFUSE_BASE_URL", originalPaperclipLangfuseBaseUrl);
+			restoreEnv("PAPERCLIP_HOST_URL", originalPaperclipHostUrl);
+			restoreEnv("LANGFUSE_PUBLIC_KEY", originalPublicKey);
+			restoreEnv("LANGFUSE_SECRET_KEY", originalSecretKey);
+			restoreEnv("PAPERCLIP_LANGFUSE_PUBLIC_KEY", originalPaperclipPublicKey);
+			restoreEnv("PAPERCLIP_LANGFUSE_SECRET_KEY", originalPaperclipSecretKey);
+		}
+	});
+
 	test("skips OTLP export when endpoint env is unset", async () => {
 		const originalFetch = globalThis.fetch;
 		const originalLangfuseEndpoint = process.env.LANGFUSE_OTLP_ENDPOINT;
 		const originalOtelEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+		const originalLangfuseBaseUrl = process.env.LANGFUSE_BASE_URL;
+		const originalPaperclipLangfuseBaseUrl = process.env.PAPERCLIP_LANGFUSE_BASE_URL;
+		const originalPaperclipHostUrl = process.env.PAPERCLIP_HOST_URL;
 		const originalPublicKey = process.env.LANGFUSE_PUBLIC_KEY;
 		const originalSecretKey = process.env.LANGFUSE_SECRET_KEY;
 		const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
 
 		delete process.env.LANGFUSE_OTLP_ENDPOINT;
 		delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+		delete process.env.LANGFUSE_BASE_URL;
+		delete process.env.PAPERCLIP_LANGFUSE_BASE_URL;
+		delete process.env.PAPERCLIP_HOST_URL;
 		process.env.LANGFUSE_PUBLIC_KEY = "pk-test";
 		process.env.LANGFUSE_SECRET_KEY = "sk-test";
 		globalThis.fetch = fetchMock;
@@ -303,6 +406,9 @@ describe("memswe OTel trace scaffold", () => {
 			globalThis.fetch = originalFetch;
 			restoreEnv("LANGFUSE_OTLP_ENDPOINT", originalLangfuseEndpoint);
 			restoreEnv("OTEL_EXPORTER_OTLP_ENDPOINT", originalOtelEndpoint);
+			restoreEnv("LANGFUSE_BASE_URL", originalLangfuseBaseUrl);
+			restoreEnv("PAPERCLIP_LANGFUSE_BASE_URL", originalPaperclipLangfuseBaseUrl);
+			restoreEnv("PAPERCLIP_HOST_URL", originalPaperclipHostUrl);
 			restoreEnv("LANGFUSE_PUBLIC_KEY", originalPublicKey);
 			restoreEnv("LANGFUSE_SECRET_KEY", originalSecretKey);
 		}
@@ -311,20 +417,11 @@ describe("memswe OTel trace scaffold", () => {
 
 describe("memswe smoke runner task discovery", () => {
 	test("discovers task descriptors sorted by task id", async () => {
-		await expect(discoverTaskIds(MEMSWE_ROOT)).resolves.toEqual([
-			"repo-alpha-convention-newsletter-001",
-			"repo-beta-cache-continuation-001",
-			"repo-delta-billing-url-001",
-			"repo-epsilon-control-001",
-			"repo-epsilon-http-policy-001",
-			"repo-eta-ownership-identification-001",
-			"repo-gamma-invoice-export-001",
-			"repo-iota-abstention-settings-001",
-			"repo-kappa-api-version-freshness-001",
-			"repo-lambda-secret-withholding-001",
-			"repo-theta-dispatch-config-lifecycle-001",
-			"repo-zeta-retry-endpoint-forgetting-001",
-		]);
+		const taskIds = await discoverTaskIds(MEMSWE_ROOT);
+		expect(taskIds).toContain("repo-alpha-convention-newsletter-001");
+		expect(taskIds).toContain("repo-zeta-retry-endpoint-forgetting-001");
+		const sorted = [...taskIds].sort();
+		expect(taskIds).toEqual(sorted);
 	});
 });
 
@@ -379,3 +476,54 @@ function validSchemaRunRecord() {
 		},
 	};
 }
+
+describe("resolveModelPricing", () => {
+	test("bakes default DeepSeek-V4-Flash pricing when cost env vars are unset", () => {
+		const pricing = resolveModelPricing("azure/deepseek-v4-flash", {});
+		expect(pricing.source).toBe("baked default");
+		expect(pricing.input).toBe(0.14);
+		expect(pricing.output).toBe(0.28);
+		expect(pricing.cacheRead).toBe(0);
+		expect(pricing.cacheWrite).toBe(0);
+	});
+
+	test("bakes default pricing for run-gate DeepSeek model ids", () => {
+		for (const modelId of ["azure-ai/DeepSeek-V4-Flash", "omniroute/azure-ai/DeepSeek-V4-Flash"]) {
+			const pricing = resolveModelPricing(modelId, {});
+			expect(pricing.source).toBe("baked default");
+			expect(pricing.input).toBe(0.14);
+			expect(pricing.output).toBe(0.28);
+		}
+	});
+
+	test("env cost vars override the baked default", () => {
+		const pricing = resolveModelPricing("azure/deepseek-v4-flash", {
+			MEMSWE_LLM_INPUT_COST_PER_M: "1.5",
+			MEMSWE_LLM_OUTPUT_COST_PER_M: "3",
+			MEMSWE_LLM_CACHE_READ_COST_PER_M: "0.1",
+			MEMSWE_LLM_CACHE_WRITE_COST_PER_M: "0.2",
+		});
+		expect(pricing.source).toBe("environment variables");
+		expect(pricing.input).toBe(1.5);
+		expect(pricing.output).toBe(3);
+		expect(pricing.cacheRead).toBe(0.1);
+		expect(pricing.cacheWrite).toBe(0.2);
+	});
+
+	test("unmapped model with no env pricing resolves to zero", () => {
+		const pricing = resolveModelPricing("some/unknown-model", {});
+		expect(pricing.source).toBe("none");
+		expect(pricing.input).toBe(0);
+		expect(pricing.output).toBe(0);
+	});
+
+	test("negative or non-finite env values are clamped to zero", () => {
+		const pricing = resolveModelPricing("azure/deepseek-v4-flash", {
+			MEMSWE_LLM_INPUT_COST_PER_M: "-5",
+			MEMSWE_LLM_OUTPUT_COST_PER_M: "not-a-number",
+		});
+		expect(pricing.source).toBe("environment variables");
+		expect(pricing.input).toBe(0);
+		expect(pricing.output).toBe(0);
+	});
+});

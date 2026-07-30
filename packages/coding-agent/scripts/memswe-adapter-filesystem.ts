@@ -16,6 +16,7 @@ import type {
 	NormalizedTrace,
 	NormalizedTraceEvent,
 } from "./memswe-adapter-contract.ts";
+import { mintRunScopeId } from "./memswe-adapter-contract.ts";
 
 // Repository-docs / filesystem baseline (AMB-7). The canonical inspectable project-memory baseline
 // every vendor AMS is compared against: prior-session facts are written as Markdown docs under a
@@ -220,7 +221,8 @@ export class FilesystemAdapter implements AmsAdapter {
 
 export async function runFilesystemLifecycleSmoke(): Promise<FilesystemSmokeResult> {
 	const memoryRoot = process.env.MEMSWE_FS_MEMORY_DIR ?? join(RUNS_ROOT, "fs-memory");
-	const scope: AdapterScope = { id: `memswe-filesystem-smoke-${Date.now()}` };
+	const timestamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
+	const scope: AdapterScope = { id: mintRunScopeId("filesystem-smoke", timestamp) };
 	const adapter = new FilesystemAdapter({ memoryRoot });
 	const predicates: Record<string, boolean> = {};
 	try {

@@ -17,6 +17,7 @@ import type {
 	NormalizedTrace,
 	NormalizedTraceEvent,
 } from "./memswe-adapter-contract.ts";
+import { mintRunScopeId } from "./memswe-adapter-contract.ts";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "../../..");
@@ -302,7 +303,8 @@ export class LettaAdapter implements AmsAdapter {
 
 export async function runLettaLifecycleSmoke(): Promise<LettaSmokeResult> {
 	const apiUrl = process.env.LETTA_API_URL;
-	const scope: AdapterScope = { id: `memswe-letta-smoke-${Date.now()}` };
+	const timestamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
+	const scope: AdapterScope = { id: mintRunScopeId("letta-smoke", timestamp) };
 	if (!apiUrl) return skippedSmoke(scope, "LETTA_API_URL is not set");
 
 	const adapter = new LettaAdapter({

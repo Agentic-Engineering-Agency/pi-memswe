@@ -17,6 +17,7 @@ import type {
 	NormalizedTrace,
 	NormalizedTraceEvent,
 } from "./memswe-adapter-contract.ts";
+import { mintRunScopeId } from "./memswe-adapter-contract.ts";
 
 // Supermemory adapter (AMB-65). Cloud memory API (https://api.supermemory.ai); CE self-host also exists.
 // Mirrors the Graphiti adapter (async ingest + poll-until-recall). The original MemoryBench reference
@@ -285,7 +286,8 @@ export class SupermemoryAdapter implements AmsAdapter {
 export async function runSupermemoryLifecycleSmoke(): Promise<SupermemorySmokeResult> {
 	const apiKey = process.env.SUPERMEMORY_API_KEY;
 	const apiUrl = process.env.SUPERMEMORY_API_URL ?? DEFAULT_API_URL;
-	const scope: AdapterScope = { id: `memswe-supermemory-smoke-${Date.now()}` };
+	const timestamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
+	const scope: AdapterScope = { id: mintRunScopeId("supermemory-smoke", timestamp) };
 	// Supermemory Cloud is key-gated: without a key the condition is unavailable → skipped (not failed).
 	if (!apiKey) return skippedSmoke(scope, "SUPERMEMORY_API_KEY is not set");
 
