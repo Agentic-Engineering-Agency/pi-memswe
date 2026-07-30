@@ -17,6 +17,7 @@ export type TaskYaml = {
 	};
 	memswe?: {
 		memory_conditions?: Array<{ id?: string; memory_system?: string }>;
+		seeded_history?: SeededHistorySpec[];
 		session_sequence?: SessionSpec[];
 		facts?: {
 			introduce?: FactSpec[];
@@ -28,6 +29,13 @@ export type TaskYaml = {
 		};
 		trace_predicates?: Array<{ id?: string; severity?: "blocking" | "diagnostic" }>;
 	};
+};
+
+export type SeededHistorySpec = {
+	id?: string;
+	applies_to_conditions?: string[];
+	facts?: string[];
+	transcript_ref?: string;
 };
 
 export type SessionSpec = {
@@ -202,6 +210,15 @@ export function inferVerifierAssets(taskDir: string, workdir: string, task: Task
 					agentVisible: kind === "visible" && spec.agent_visible === true,
 				});
 			}
+			for (const verifierDir of verifierDirsFromCommand(spec.command ?? "")) {
+				if (!existsSync(join(taskDir, verifierDir))) continue;
+				assets.set(`${kind}:${verifierDir}`, {
+					kind,
+					source: join(taskDir, verifierDir),
+					destination: join(workdir, verifierDir),
+					agentVisible: false,
+				});
+			}
 		}
 	}
 
@@ -223,6 +240,12 @@ function verifierPathsFromCommand(command: string): string[] {
 	return [...command.matchAll(/(?:^|\s)(tests\/[A-Za-z0-9_./-]+\.(?:py|ts|tsx|js|jsx))(?:\:\:[^\s]+)?/g)].map(
 		(match) => match[1],
 	);
+}
+
+function verifierDirsFromCommand(command: string): string[] {
+	return [...command.matchAll(/(?:^|[;&|]\s*)cd\s+([A-Za-z0-9_.\/-]+)/g)]
+		.map((match) => match[1])
+		.filter((dir) => dir === "verifier" || dir.startsWith("verifier/"));
 }
 
 export async function initializeWorktreeBaseline(workdir: string): Promise<void> {
@@ -317,4 +340,136 @@ export function compareSessionIds(left: string | undefined, right: string): numb
 export function sessionIndex(sessionId: string): number {
 	const parsed = Number(sessionId.slice(1));
 	return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
+}
+
+export type PriorTranscriptMessage = { role: string; content: string };
+
+export type PriorTranscript = {
+	source: "seeded_history" | "session";
+	id: string;
+	messages: PriorTranscriptMessage[];
+};
+
+// full_context: assemble every prior (non-graded) turn the agent should carry into the graded
+// session — seeded_history transcripts scoped to full_context first, then each prior session's
+// prompt as a user turn. Returned in-order; renderFullContextPreamble turns it into prompt text.
+export function collectPriorTranscripts(task: TaskYaml, taskDir: string): PriorTranscript[] {
+	const transcripts: PriorTranscript[] = [];
+	for (const seed of task.memswe?.seeded_history ?? []) {
+		const conditions = seed.applies_to_conditions ?? [];
+		if (!conditions.includes("full_context")) continue;
+		if (!seed.transcript_ref) continue;
+		const messages = readTranscriptJsonl(join(taskDir, seed.transcript_ref));
+		if (messages.length > 0) transcripts.push({ source: "seeded_history", id: seed.id ?? seed.transcript_ref, messages });
+	}
+	const sessions = task.memswe?.session_sequence ?? [];
+	const gradedIndex = sessions.findIndex((session) => session.graded);
+	const priorEnd = gradedIndex === -1 ? sessions.length - 1 : gradedIndex;
+	for (let i = 0; i < priorEnd; i++) {
+		const session = sessions[i];
+		if (!session?.prompt_ref) continue;
+		const content = safeReadTextFile(join(taskDir, session.prompt_ref));
+		if (content === null) continue;
+		transcripts.push({ source: "session", id: session.session_id ?? session.prompt_ref, messages: [{ role: "user", content }] });
+	}
+	return transcripts;
+}
+
+function readTranscriptJsonl(path: string): PriorTranscriptMessage[] {
+	if (!existsSync(path)) return [];
+	const messages: PriorTranscriptMessage[] = [];
+	for (const line of readFileSync(path, "utf8").split("\n")) {
+		const trimmed = line.trim();
+		if (!trimmed) continue;
+		try {
+			const parsed = JSON.parse(trimmed) as { role?: unknown; content?: unknown };
+			const role = typeof parsed.role === "string" ? parsed.role : "assistant";
+			const content = typeof parsed.content === "string" ? parsed.content : JSON.stringify(parsed.content ?? "");
+			messages.push({ role, content });
+		} catch {
+			// Skip malformed JSONL lines rather than failing the whole condition.
+		}
+	}
+	return messages;
+}
+
+function safeReadTextFile(path: string): string | null {
+	if (!existsSync(path)) return null;
+	return readFileSync(path, "utf8");
+}
+
+// Render collected prior transcripts as a prompt preamble the agent receives before the graded
+// prompt. Empty when there is no prior history (single graded session, no seeds).
+export function renderFullContextPreamble(transcripts: PriorTranscript[]): string {
+	if (transcripts.length === 0) return "";
+	const blocks: string[] = [
+		"# Prior session history (full_context)",
+		"",
+		"The following is your complete prior session history for this task. Use it as remembered context when answering the current request.",
+	];
+	for (const transcript of transcripts) {
+		blocks.push("", `## ${transcript.source}:${transcript.id}`);
+		for (const message of transcript.messages) {
+			blocks.push("", `[${message.role}]`, message.content.trimEnd());
+		}
+	}
+	return `${blocks.join("\n")}\n`;
+}
+
+export type ModelPricing = {
+	/** USD per 1M input tokens. */
+	input: number;
+	/** USD per 1M output tokens. */
+	output: number;
+	/** USD per 1M cached-read tokens. */
+	cacheRead: number;
+	/** USD per 1M cached-write tokens. */
+	cacheWrite: number;
+	/** Where the input/output price came from, for logging/diagnostics. */
+	source: "environment variables" | "baked default" | "none";
+};
+
+/**
+ * Default per-model pricing (USD per 1M tokens), keyed by the exact configured model id.
+ * Baking a default lets a fresh real run record non-zero per_task_cost_usd without requiring
+ * the MEMSWE_LLM_*_COST_PER_M env vars (AGE-204). Only add a key here when you have an
+ * authoritative price for that exact model id; unmapped models resolve to 0 (source "none").
+ */
+export const DEFAULT_MODEL_PRICING: Record<string, { input: number; output: number }> = {
+	// DeepSeek-V4-Flash pricing used for corrected AGE-193 rollup/run-records: input 0.14, output 0.28 per 1M tokens.
+	"azure/deepseek-v4-flash": { input: 0.14, output: 0.28 },
+	"omniroute/azure-ai/DeepSeek-V4-Flash": { input: 0.14, output: 0.28 },
+	"azure-ai/DeepSeek-V4-Flash": { input: 0.14, output: 0.28 },
+};
+
+/**
+ * Resolve the pricing to register for `modelId`. MEMSWE_LLM_*_COST_PER_M env vars take priority;
+ * when unset, fall back to the baked default for the model id; when neither applies, price is 0.
+ * cacheRead/cacheWrite come only from env (default 0) since baked defaults cover input/output.
+ */
+export function resolveModelPricing(modelId: string, env: NodeJS.ProcessEnv = process.env): ModelPricing {
+	const defaultPricing = DEFAULT_MODEL_PRICING[modelId];
+	const envInput = env.MEMSWE_LLM_INPUT_COST_PER_M;
+	const envOutput = env.MEMSWE_LLM_OUTPUT_COST_PER_M;
+	const envCacheRead = env.MEMSWE_LLM_CACHE_READ_COST_PER_M;
+	const envCacheWrite = env.MEMSWE_LLM_CACHE_WRITE_COST_PER_M;
+
+	const rawInput = envInput !== undefined ? Number(envInput) : defaultPricing?.input ?? 0;
+	const rawOutput = envOutput !== undefined ? Number(envOutput) : defaultPricing?.output ?? 0;
+	const rawCacheRead = envCacheRead !== undefined ? Number(envCacheRead) : 0;
+	const rawCacheWrite = envCacheWrite !== undefined ? Number(envCacheWrite) : 0;
+
+	const input = Number.isFinite(rawInput) && rawInput >= 0 ? rawInput : 0;
+	const output = Number.isFinite(rawOutput) && rawOutput >= 0 ? rawOutput : 0;
+	const cacheRead = Number.isFinite(rawCacheRead) && rawCacheRead >= 0 ? rawCacheRead : 0;
+	const cacheWrite = Number.isFinite(rawCacheWrite) && rawCacheWrite >= 0 ? rawCacheWrite : 0;
+
+	const source: ModelPricing["source"] =
+		envInput !== undefined || envOutput !== undefined
+			? "environment variables"
+			: defaultPricing
+				? "baked default"
+				: "none";
+
+	return { input, output, cacheRead, cacheWrite, source };
 }

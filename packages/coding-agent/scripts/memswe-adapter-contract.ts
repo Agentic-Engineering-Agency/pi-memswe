@@ -80,3 +80,8 @@ export interface AmsAdapter {
 	delete(scope: AdapterScope): Promise<NormalizedTrace>;
 	export(): Promise<AdapterExport>;
 }
+
+/** Mint a run-unique adapter scope id so different task runs/repeats never share a memory namespace. */
+export function mintRunScopeId(taskId: string, timestamp: string): string {
+	return `memswe-${taskId}-${timestamp}`;
+}

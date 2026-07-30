@@ -2,6 +2,7 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 import type {
@@ -17,12 +18,18 @@ import type {
 	NormalizedTraceError,
 	NormalizedTraceEvent,
 } from "./memswe-adapter-contract.ts";
+import { mintRunScopeId } from "./memswe-adapter-contract.ts";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "../../..");
 const RUNS_ROOT = join(REPO_ROOT, ".memswe-runs");
 const PROVIDER_ID = "mem0";
 const DEFAULT_TIMEOUT_MS = 5_000;
+// mem0 extracts facts via an LLM during/after add, so a freshly-seeded fact may not be immediately
+// searchable; poll for recall (and for the post-delete miss) instead of asserting a single shot.
+const DEFAULT_RECALL_TIMEOUT_MS = 20_000;
+const DEFAULT_MISS_TIMEOUT_MS = 10_000;
+const DEFAULT_RECALL_POLL_MS = 1_000;
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
@@ -53,6 +60,7 @@ type Mem0SmokeResult = {
 	scope_id: string;
 	status: "passed" | "failed" | "skipped";
 	predicate_results: Record<string, boolean>;
+	settle_ms: number | null;
 	export: AdapterExport | null;
 	error?: {
 		failed_phase: string;
@@ -227,9 +235,11 @@ export class Mem0Adapter implements AmsAdapter {
 
 export async function runMem0LifecycleSmoke(): Promise<Mem0SmokeResult> {
 	const apiUrl = process.env.MEM0_API_URL;
+	const timestamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
+	const runScopeId = mintRunScopeId("mem0-smoke", timestamp);
 	const scope: AdapterScope = {
-		id: `memswe-mem0-smoke-${Date.now()}`,
-		metadata: { run_id: "memswe-mem0-lifecycle-smoke", agent_id: "memswe" },
+		id: runScopeId,
+		metadata: { run_id: runScopeId, agent_id: "memswe" },
 	};
 	if (!apiUrl) return skippedSmoke(scope, "MEM0_API_URL is not set");
 
@@ -239,16 +249,24 @@ export async function runMem0LifecycleSmoke(): Promise<Mem0SmokeResult> {
 		timeoutMs: Number(process.env.MEM0_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS),
 	});
 	const predicates: Record<string, boolean> = {};
+	let settleMs: number | null = null;
 	try {
 		await adapter.reset(scope);
 		predicates.reset_completed = true;
 		const content = `MemSWE Mem0 smoke fact ${scope.id}: retain recall delete lifecycle marker.`;
 		await adapter.seed([{ scope, operation: "write", content, metadata: { smoke: true } }]);
-		const retained = await adapter.run({ scope, prompt: `Find lifecycle marker for ${scope.id}` });
-		predicates.recall_after_retain = retained.output.includes(scope.id) && retained.output.includes("lifecycle marker");
+		predicates.retain_completed = true;
+		// mem0 fact extraction is asynchronous → poll until the marker is searchable; record settle time.
+		const settleStart = Date.now();
+		const retained = await waitForRecall(adapter, scope, `Find lifecycle marker for ${scope.id}`, scope.id, "lifecycle marker");
+		settleMs = retained ? Date.now() - settleStart : null;
+		predicates.recall_after_retain = retained;
+		await adapter.observe();
+		predicates.observe_completed = true;
 		await adapter.delete(scope);
-		const afterDelete = await adapter.run({ scope, prompt: `Find lifecycle marker for ${scope.id}` });
-		predicates.recall_after_delete_empty = !afterDelete.output.includes(scope.id);
+		predicates.delete_completed = true;
+		// Reset-safety proof: after the scoped delete the marker must no longer be searchable (poll the miss).
+		predicates.recall_miss_after_delete = await waitForMiss(adapter, scope, `Find lifecycle marker for ${scope.id}`, scope.id);
 		const exported = await adapter.export();
 		return {
 			schema_version: "memswe-mem0-smoke.v0.1",
@@ -257,6 +275,7 @@ export async function runMem0LifecycleSmoke(): Promise<Mem0SmokeResult> {
 			scope_id: scope.id,
 			status: Object.values(predicates).every(Boolean) ? "passed" : "failed",
 			predicate_results: predicates,
+			settle_ms: settleMs,
 			export: exported,
 		};
 	} catch (caught) {
@@ -270,6 +289,7 @@ export async function runMem0LifecycleSmoke(): Promise<Mem0SmokeResult> {
 			scope_id: scope.id,
 			status: "failed",
 			predicate_results: predicates,
+			settle_ms: settleMs,
 			export: exported,
 			error: {
 				failed_phase: failedPhase(exported),
@@ -357,6 +377,26 @@ function isUnavailable(message: string): boolean {
 	return message.includes("fetch failed") || message.includes("ECONNREFUSED") || message.includes("AbortError") || message.includes("HTTP 401");
 }
 
+async function waitForRecall(adapter: Mem0Adapter, scope: AdapterScope, prompt: string, ...needles: string[]): Promise<boolean> {
+	const deadline = Date.now() + Number(process.env.MEM0_RECALL_TIMEOUT_MS ?? DEFAULT_RECALL_TIMEOUT_MS);
+	while (Date.now() <= deadline) {
+		const result = await adapter.run({ scope, prompt });
+		if (needles.every((needle) => result.output.includes(needle))) return true;
+		await delay(Number(process.env.MEM0_RECALL_POLL_MS ?? DEFAULT_RECALL_POLL_MS));
+	}
+	return false;
+}
+
+async function waitForMiss(adapter: Mem0Adapter, scope: AdapterScope, prompt: string, ...needles: string[]): Promise<boolean> {
+	const deadline = Date.now() + Number(process.env.MEM0_MISS_TIMEOUT_MS ?? DEFAULT_MISS_TIMEOUT_MS);
+	while (Date.now() <= deadline) {
+		const result = await adapter.run({ scope, prompt });
+		if (!needles.some((needle) => result.output.includes(needle))) return true;
+		await delay(Number(process.env.MEM0_RECALL_POLL_MS ?? DEFAULT_RECALL_POLL_MS));
+	}
+	return false;
+}
+
 function skippedSmoke(scope: AdapterScope, message: string, apiUrl: string | null = null, exported: AdapterExport | null = null): Mem0SmokeResult {
 	return {
 		schema_version: "memswe-mem0-smoke.v0.1",
@@ -365,6 +405,7 @@ function skippedSmoke(scope: AdapterScope, message: string, apiUrl: string | nul
 		scope_id: scope.id,
 		status: "skipped",
 		predicate_results: {},
+		settle_ms: null,
 		export: exported,
 		error: {
 			failed_phase: "preflight",
@@ -387,7 +428,7 @@ async function main(): Promise<void> {
 	const result = await runMem0LifecycleSmoke();
 	const resultPath = join(artifactsDir, "mem0-smoke-result.json");
 	await writeFile(resultPath, `${JSON.stringify(result, null, "\t")}\n`);
-	console.log(`Mem0 lifecycle smoke ${result.status}`);
+	console.log(`Mem0 lifecycle smoke ${result.status}${result.settle_ms != null ? ` (settle ${result.settle_ms}ms)` : ""}`);
 	console.log(`Wrote ${relative(REPO_ROOT, resultPath)}`);
 	if (result.error) console.log(result.error.guidance);
 	if (result.status === "failed") process.exitCode = 1;

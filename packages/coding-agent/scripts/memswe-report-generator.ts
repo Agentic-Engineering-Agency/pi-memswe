@@ -71,7 +71,7 @@ type HindsightSummary = {
 	apiUrl: string | null;
 	traceEvents: number;
 	retainVisible: boolean | null;
-	recallMentionsGammaFact: boolean | null;
+	recallReturnedTaskFact: boolean | null;
 	deleteClearedBank: boolean | null;
 	error: string | null;
 };
@@ -274,7 +274,7 @@ async function loadHindsight(path: string): Promise<HindsightSummary> {
 		apiUrl: stringAt(smoke.api_url),
 		traceEvents: arrayAt(smoke.trace).length,
 		retainVisible: booleanAt(predicates.retain_visible),
-		recallMentionsGammaFact: booleanAt(predicates.recall_mentions_gamma_fact),
+		recallReturnedTaskFact: booleanAt(predicates.recall_returned_task_fact ?? predicates.recall_mentions_gamma_fact),
 		deleteClearedBank: booleanAt(predicates.delete_cleared_bank),
 		error: error ? stringAt(error.message) : null,
 	};
@@ -371,7 +371,7 @@ ${metricCards}
 <div class="panel"><h2>Hindsight lifecycle smokes</h2><div id="hindsight" class="timeline"></div></div>
 </section>
 <section class="panel"><h2>MiniMax / Hermes diagnostic reviews</h2><div id="reviews"></div></section>
-<section class="panel"><h2>Interpretation guardrails</h2><div class="grid three"><div class="note"><h3>Scoring truth</h3><p>Visible/protected verifier outputs and run records determine pass/fail. Judge notes do not change task success.</p></div><div class="note"><h3>Real-model smoke</h3><p><code>minimax-real</code> proves provider/runtime inference and artifact capture. Tools are disabled, so this is not yet a full editing benchmark.</p></div><div class="note"><h3>Memory readiness</h3><p>Hindsight smoke proves local reset/retain/recall/delete lifecycle. Full <code>hindsight</code> condition execution in <code>memswe:smoke</code> is still future work.</p></div></div></section>
+<section class="panel"><h2>Interpretation guardrails</h2><div class="grid three"><div class="note"><h3>Scoring truth</h3><p>Visible/protected verifier outputs and run records determine pass/fail. Judge notes do not change task success.</p></div><div class="note"><h3>Real-model smoke</h3><p><code>real</code> and <code>minimax-real</code> prove provider/runtime inference and artifact capture. Tools are disabled, so this is not yet a full editing benchmark.</p></div><div class="note"><h3>Memory readiness</h3><p>Provider smokes prove reset/retain/recall/delete lifecycle. The <code>hindsight</code> condition in <code>memswe:smoke</code> is task-aware and records provider-smoke evidence beside each run record.</p></div></div></section>
 <div class="footer">Report generator: <code>packages/coding-agent/scripts/memswe-report-generator.ts</code></div>
 </div>
 <script id="report-data" type="application/json">${scriptJson(data)}</script>
@@ -388,7 +388,7 @@ function renderRuns(){const q=byId('q').value.toLowerCase();const cond=byId('con
 for(const id of ['q','condition','mode','outcome']) byId(id).addEventListener('input',renderRuns);
 renderRuns();
 byId('suites').innerHTML=data.suites.map((s)=>'<div class="event"><div><code>'+esc(s.timestamp)+'</code><br/><span class="pill '+(s.failed?'warn':'ok')+'">'+s.passed+' pass / '+s.failed+' fail</span></div><div><div class="path">'+esc(s.artifactPath)+'</div>'+s.tasks.map((t)=>'<span class="pill '+(t.status==='passed'?'ok':'bad')+'">'+esc(t.taskId)+': '+esc(t.status)+(t.failedPhase?' / '+esc(t.failedPhase):'')+'</span>').join(' ')+'</div></div>').join('')||'<p class="muted">No suite summaries.</p>';
-byId('hindsight').innerHTML=data.hindsight.map((h)=>'<div class="event"><div><code>'+esc(h.timestamp)+'</code><br/><span class="pill '+(h.status==='passed'?'ok':'bad')+'">'+esc(h.status)+'</span></div><div><div class="path">'+esc(h.artifactPath)+'</div><p>trace events: <strong>'+h.traceEvents+'</strong>; retain: <strong>'+h.retainVisible+'</strong>; recall: <strong>'+h.recallMentionsGammaFact+'</strong>; delete: <strong>'+h.deleteClearedBank+'</strong></p><p class="muted">'+esc(h.error||'')+'</p></div></div>').join('')||'<p class="muted">No Hindsight smokes.</p>';
+byId('hindsight').innerHTML=data.hindsight.map((h)=>'<div class="event"><div><code>'+esc(h.timestamp)+'</code><br/><span class="pill '+(h.status==='passed'?'ok':'bad')+'">'+esc(h.status)+'</span></div><div><div class="path">'+esc(h.artifactPath)+'</div><p>trace events: <strong>'+h.traceEvents+'</strong>; retain: <strong>'+h.retainVisible+'</strong>; recall: <strong>'+h.recallReturnedTaskFact+'</strong>; delete: <strong>'+h.deleteClearedBank+'</strong></p><p class="muted">'+esc(h.error||'')+'</p></div></div>').join('')||'<p class="muted">No Hindsight smokes.</p>';
 byId('reviews').innerHTML=data.reviews.map((r)=>'<div class="note"><h3>'+esc(r.name)+' <span class="pill">'+esc(r.model||'unknown model')+'</span> <span class="pill '+(r.verdict==='pass'?'ok':r.verdict==='fail'?'bad':'warn')+'">'+esc(r.verdict||'diagnostic')+'</span></h3><p>'+esc(r.summary||'')+'</p><ul>'+r.notes.map((n)=>'<li>'+esc(n)+'</li>').join('')+'</ul><div class="path">'+esc(r.artifactPath)+'</div></div>').join('')||'<p class="muted">No diagnostic review files found yet.</p>';
 </script>
 </body>
