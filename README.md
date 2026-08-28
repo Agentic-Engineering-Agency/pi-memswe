@@ -95,6 +95,9 @@ npm run check        # Lint, format, and type check
 ./pi-test.sh         # Run pi from sources (can be run from any directory)
 ```
 
+See [the portfolio integration contract](docs/portfolio-integration.md) for the runtime, memory
+adapter, evidence, and future Run Control/Telar ownership seams.
+
 ## Supply-chain hardening
 
 We treat npm dependency changes as reviewed code changes.
