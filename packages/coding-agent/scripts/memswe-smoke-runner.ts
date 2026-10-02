@@ -12,11 +12,13 @@ import {
 	type AgentSessionEvent,
 	createAgentSession,
 	createExtensionRuntime,
+	type LoadExtensionsResult,
 	ModelRegistry,
 	type ResourceLoader,
 	SessionManager,
 	SettingsManager,
 } from "../src/index.ts";
+import { isLangfuseAgentTracingConfigured, loadLangfuseExtensions } from "./memswe-langfuse-extension.ts";
 import {
 	discoverTaskIds,
 	inferVerifierAssets,
@@ -116,6 +118,7 @@ type AgentRunResult = {
 	model_id: string;
 	provider_id: string;
 	base_url: string;
+	langfuse_tracing: boolean;
 	total_tokens?: number;
 	input_tokens?: number;
 	output_tokens?: number;
@@ -310,9 +313,9 @@ export function classifyPrimaryFailureCategory(
 	return allPassed ? null : "task_failure";
 }
 
-function createMemSwerResourceLoader(): ResourceLoader {
+function createMemSwerResourceLoader(extensions: LoadExtensionsResult): ResourceLoader {
 	return {
-		getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
+		getExtensions: () => extensions,
 		getSkills: () => ({ skills: [], diagnostics: [] }),
 		getPrompts: () => ({ prompts: [], diagnostics: [] }),
 		getThemes: () => ({ themes: [], diagnostics: [] }),
@@ -330,6 +333,7 @@ async function runFauxAgentSession(
 	taskDir: string,
 	workdir: string,
 	artifactsDir: string,
+	observabilityEnabled: boolean,
 	priorTranscripts?: PriorTranscript[],
 	memoryPreamble?: string,
 ): Promise<AgentRunResult> {
@@ -337,6 +341,9 @@ async function runFauxAgentSession(
 	const gradedPrompt = await readFile(join(taskDir, gradedSession.prompt_ref!), "utf8");
 	const fullContextPreamble = priorTranscripts ? renderFullContextPreamble(priorTranscripts) : "";
 	const prompt = [memoryPreamble, fullContextPreamble, gradedPrompt].filter((part) => part && part.length > 0).join("\n");
+	const extensions = observabilityEnabled
+		? await loadLangfuseExtensions(workdir)
+		: { extensions: [], errors: [], runtime: createExtensionRuntime() };
 	const fauxProvider = registerFauxProvider();
 	const model = fauxProvider.getModel();
 	fauxProvider.setResponses([
@@ -374,7 +381,7 @@ async function runFauxAgentSession(
 		thinkingLevel: "off",
 		authStorage,
 		modelRegistry,
-		resourceLoader: createMemSwerResourceLoader(),
+		resourceLoader: createMemSwerResourceLoader(extensions),
 		tools: [],
 		sessionManager: SessionManager.inMemory(workdir),
 		settingsManager,
@@ -412,6 +419,7 @@ async function runFauxAgentSession(
 		model_id: model.id,
 		provider_id: model.provider,
 		base_url: model.baseUrl,
+		langfuse_tracing: extensions.extensions.length > 0,
 	};
 }
 
@@ -420,6 +428,7 @@ async function runRealAgentSession(
 	taskDir: string,
 	workdir: string,
 	artifactsDir: string,
+	observabilityEnabled: boolean,
 	priorTranscripts?: PriorTranscript[],
 	memoryPreamble?: string,
 ): Promise<AgentRunResult> {
@@ -478,6 +487,9 @@ async function runRealAgentSession(
 
 	if (!model) throw new Error(`Model ${modelId} is not registered for provider ${providerId}`);
 
+	const extensions = observabilityEnabled
+		? await loadLangfuseExtensions(workdir)
+		: { extensions: [], errors: [], runtime: createExtensionRuntime() };
 	const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false } });
 	const events: AgentSessionEvent[] = [];
 	const { session } = await createAgentSession({
@@ -487,7 +499,7 @@ async function runRealAgentSession(
 		thinkingLevel: "off",
 		authStorage,
 		modelRegistry,
-		resourceLoader: createMemSwerResourceLoader(),
+		resourceLoader: createMemSwerResourceLoader(extensions),
 		tools: [],
 		sessionManager: SessionManager.inMemory(workdir),
 		settingsManager,
@@ -553,6 +565,7 @@ async function runRealAgentSession(
 		model_id: model.id,
 		provider_id: model.provider,
 		base_url: model.baseUrl,
+		langfuse_tracing: extensions.extensions.length > 0,
 		total_tokens,
 		input_tokens,
 		output_tokens,
@@ -566,11 +579,14 @@ async function runAgentSession(
 	taskDir: string,
 	workdir: string,
 	artifactsDir: string,
+	observabilityEnabled: boolean,
 	priorTranscripts?: PriorTranscript[],
 	memoryPreamble?: string,
 ): Promise<AgentRunResult> {
-	if (agentMode === "real" || agentMode === "minimax-real") return runRealAgentSession(task, taskDir, workdir, artifactsDir, priorTranscripts, memoryPreamble);
-	return runFauxAgentSession(task, taskDir, workdir, artifactsDir, priorTranscripts, memoryPreamble);
+	if (agentMode === "real" || agentMode === "minimax-real") {
+		return runRealAgentSession(task, taskDir, workdir, artifactsDir, observabilityEnabled, priorTranscripts, memoryPreamble);
+	}
+	return runFauxAgentSession(task, taskDir, workdir, artifactsDir, observabilityEnabled, priorTranscripts, memoryPreamble);
 }
 
 function verifierCommands(task: TaskYaml, includeHidden: boolean): VerifierCommand[] {
@@ -732,6 +748,7 @@ async function runTask(
 	agentMode: AgentMode,
 	traceEnabled: boolean,
 	repetitionIndex: number,
+	agentTracingEnabled: boolean,
 ): Promise<TaskRunResult> {
 	const taskDir = join(MEMSWE_ROOT, "tasks", taskId);
 	const taskYamlPath = join(taskDir, "task.yaml");
@@ -766,12 +783,15 @@ async function runTask(
 	const memoryPreamble = honchoMemory?.preamble;
 	const agentResult = skipFauxAgent
 		? undefined
-		: await runAgentSession(agentMode, parsed, taskDir, repoDir, artifactsDir, priorTranscripts, memoryPreamble);
+		: await runAgentSession(agentMode, parsed, taskDir, repoDir, artifactsDir, agentTracingEnabled, priorTranscripts, memoryPreamble);
 	const agentSessionLatencyMs = skipFauxAgent ? 0 : Math.round(performance.now() - agentSessionStart);
 	if (agentResult) {
 		console.log(
 			`${agentResult.agent_mode} agent session ${agentResult.session_id} finished with ${agentResult.status}; captured ${agentResult.event_count} event(s).`,
 		);
+		if (agentResult.langfuse_tracing) {
+			console.log(`Langfuse agent tracing active for session ${agentResult.session_id}.`);
+		}
 	}
 	// AGE-206: after the graded honcho session, write the agent's conclusion back into the SAME per-run
 	// Honcho workspace and assert readback (peer representation + conclusion/derived data). The workspace is
@@ -971,9 +991,10 @@ async function main(): Promise<void> {
 	const agentMode = parseAgentMode(getArgumentValue("--agent-mode"));
 	const repetitionIndex = parseRepetitionIndex(getArgumentValue("--repetition-index"));
 	const traceEnabled = !hasFlag("--no-otel-trace") && (hasFlag("--otel-trace") || isMemSweOtlpExportConfigured());
+	const agentTracingEnabled = !hasFlag("--no-otel-trace") && isLangfuseAgentTracingConfigured();
 	const timestamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
 	if (!hasFlag("--all-tasks")) {
-		const result = await runTask(getArgumentValue("--task-id") ?? DEFAULT_TASK_ID, timestamp, includeHidden, skipFauxAgent, conditionId, agentMode, traceEnabled, repetitionIndex);
+		const result = await runTask(getArgumentValue("--task-id") ?? DEFAULT_TASK_ID, timestamp, includeHidden, skipFauxAgent, conditionId, agentMode, traceEnabled, repetitionIndex, agentTracingEnabled);
 		if (!result.allPassed) process.exitCode = 1;
 		return;
 	}
@@ -988,7 +1009,7 @@ async function main(): Promise<void> {
 	let hasFailure = false;
 	for (const taskId of await discoverTaskIds(MEMSWE_ROOT)) {
 		try {
-			const result = await runTask(taskId, timestamp, includeHidden, skipFauxAgent, conditionId, agentMode, traceEnabled, repetitionIndex);
+			const result = await runTask(taskId, timestamp, includeHidden, skipFauxAgent, conditionId, agentMode, traceEnabled, repetitionIndex, agentTracingEnabled);
 			const status = result.allPassed ? "passed" : "failed";
 			hasFailure = hasFailure || !result.allPassed;
 			taskResults.push({
