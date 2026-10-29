@@ -41,3 +41,5 @@ plans/
 collect.sh
 .memswe-runs/
 /.omp/skills
+.jevmem/
+.cursor/hooks/state/
